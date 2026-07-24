@@ -29,9 +29,13 @@ VISTA combines two complementary approaches:
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/LzVv123456/VISTA
-cd VISTA
+# Git LFS is required for the bundled MMHal-Bench assets.
+git lfs install
+
+# Clone this V100-configured repository.
+git clone https://github.com/alpha-godzilla/vista-v100.git
+cd vista-v100
+git lfs pull
 
 # Create and activate the virtual environment
 conda env create -f environment.yml
