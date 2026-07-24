@@ -41,6 +41,15 @@ git lfs pull
 conda env create -f environment.yml
 ```
 
+For the V100 server, install the CUDA 11.8 PyTorch build before the
+remaining Python dependencies:
+
+```bash
+pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
+  --index-url https://download.pytorch.org/whl/cu118
+pip install -r requirements.txt
+```
+
 ## Prepare Data
 Download MSCOCO 2014 dataset from [the official website](https://cocodataset.org/#home) and extract it to your data directory.
 
