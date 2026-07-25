@@ -77,6 +77,9 @@ export VISTA_COCO_ROOT=/path/to/coco
 # For CHAIR evaluation.
 bash run_chair.sh
 
+# Sweep CHAIR gamma/lambda settings on six GPUs and summarize the metrics.
+bash run_chair_sweep.sh
+
 # For POPE evaluation (specify split with --pope-type).
 bash run_pope.sh
 
@@ -85,6 +88,24 @@ bash run_mmhal.sh
 ```
 
 Please check the corresponding bash script for how to read results.
+
+The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
+values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
+Here gamma refers to VISTA's `--logits-alpha`. The 24 runs are distributed
+round-robin across the six GPUs. Completed 500-caption JSONL files are reused,
+partial files are preserved with a timestamp, and the final CHAIR metrics are
+written to:
+
+```text
+exp_results/chair_sweep_gamma_lambda/chair_sweep_summary.md
+exp_results/chair_sweep_gamma_lambda/chair_sweep_summary.csv
+```
+
+The defaults can be overridden with environment variables:
+
+```bash
+GPU_IDS="0 1 2 3 4 5" SUBSET_SIZE=500 bash run_chair_sweep.sh
+```
 
 ### Configuration Options
 
