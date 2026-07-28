@@ -87,6 +87,19 @@ bash run_chair_ot_bary.sh
 The manifest must contain one unique integer COCO image ID per line. Its order
 is preserved, and random `--subset-size` sampling is disabled when it is set.
 
+Run the default six-GPU OT grid with fixed `gamma=0.3`, `lambda=0.17`,
+`topk={4,8,16,32}`, and `visual_tokens={16,36,64}`:
+
+```bash
+SUBSET_IDS_FILE=/data/sun_yuxi/datasets/coco/splits/chair_seed1994_500.txt \
+bash run_chair_ot_topk_visual_sweep.sh
+```
+
+The 12 configurations are assigned round-robin to GPUs `0 1 2 3 4 5`.
+Completed 500-caption results are reused. CHAIR metrics and logs are written
+under `exp_results/chair_ot_topk_visual_sweep/`. Override the grid with, for
+example, `TOPKS="4 8" VISUAL_TOKENS="16 36" GPU_IDS="0 1"`.
+
 Override OT parameters through environment variables:
 
 ```bash
