@@ -40,12 +40,11 @@ class OTBaryCLICompatibilityTests(unittest.TestCase):
         args.ot_visual_tokens = 36
         args.ot_sinkhorn_iters = 3
         args.ot_epsilon = 0.05
-        args.ot_layer_temperature = 0.1
         args.ot_force_uniform = False
 
         actual = "_".join(myutils.prepare_common_fileparts(args))
 
-        self.assertIn("otbary_m8_k36_it3_eps0.05_tau0.1", actual)
+        self.assertIn("otbary_m8_k36_it3_eps0.05", actual)
 
     def test_ot_rejects_non_llava_model(self):
         args = common_args()

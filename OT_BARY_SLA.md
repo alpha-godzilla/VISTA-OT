@@ -22,7 +22,7 @@ local-to-local transport block contributes to the layer score.
 The scores become a distribution over early layers:
 
 ```text
-layer_weights = softmax(layer_scores / layer_temperature)
+layer_weights = softmax(layer_scores)
 augmented_logits = sum(layer_weights * early_logits)
 final_logits = (1 - gamma) * final_logits + gamma * augmented_logits
 ```
@@ -38,14 +38,14 @@ ot_topk              = 8
 ot_visual_tokens     = 36
 ot_sinkhorn_iters    = 3
 ot_epsilon           = 0.05
-ot_layer_temperature = 0.1
 logits_alpha (gamma) = 0.3
-logits_layers        = 26,30
+logits_layers        = 25,30
 ```
 
 The repository's historical `25,30` setting is an inclusive six-layer range.
-It remains unchanged for backward compatibility. The OT runner explicitly
-uses `26,30`, an inclusive five-layer range.
+The OT runner retains it so that original SLA and adaptive OT weighting differ
+only in their aggregation rule. The paper's five-layer setting can be selected
+explicitly with `LOGITS_LAYERS=26,30`.
 
 ## Run
 
@@ -78,7 +78,6 @@ OT_TOPK=16 \
 OT_VISUAL_TOKENS=36 \
 OT_SINKHORN_ITERS=5 \
 OT_EPSILON=0.1 \
-OT_LAYER_TEMPERATURE=0.2 \
 bash run_chair_ot_bary.sh
 ```
 

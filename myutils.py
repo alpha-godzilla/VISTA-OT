@@ -45,7 +45,6 @@ def add_ot_bary_sla_arguments(parser):
     group.add_argument("--ot-visual-tokens", type=int, default=36)
     group.add_argument("--ot-sinkhorn-iters", type=int, default=3)
     group.add_argument("--ot-epsilon", type=float, default=0.05)
-    group.add_argument("--ot-layer-temperature", type=float, default=0.1)
     group.add_argument(
         "--ot-log-stats",
         action="store_true",
@@ -108,7 +107,6 @@ def prepare_common_fileparts(args):
                     f"k{args.ot_visual_tokens}",
                     f"it{args.ot_sinkhorn_iters}",
                     f"eps{args.ot_epsilon}",
-                    f"tau{args.ot_layer_temperature}",
                 ]
             )
             if args.ot_force_uniform:

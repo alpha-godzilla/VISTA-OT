@@ -22,7 +22,6 @@ def make_args(use_ot=False, force_uniform=False):
         ot_visual_tokens=4,
         ot_sinkhorn_iters=3,
         ot_epsilon=0.05,
-        ot_layer_temperature=0.1,
         ot_log_stats=False,
         ot_force_uniform=force_uniform,
     )

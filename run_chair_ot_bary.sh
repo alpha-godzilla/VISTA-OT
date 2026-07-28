@@ -8,7 +8,7 @@ MODE="${MODE:-ot}"
 SUBSET_SIZE="${SUBSET_SIZE:-500}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 EXP_FOLDER="${EXP_FOLDER:-chair_ot_bary}"
-LOGITS_LAYERS="${LOGITS_LAYERS:-26,30}"
+LOGITS_LAYERS="${LOGITS_LAYERS:-25,30}"
 LOGITS_ALPHA="${LOGITS_ALPHA:-0.3}"
 VSV_LAMBDA="${VSV_LAMBDA:-0.17}"
 
@@ -62,7 +62,6 @@ case "$MODE" in
       --ot-visual-tokens "${OT_VISUAL_TOKENS:-36}"
       --ot-sinkhorn-iters "${OT_SINKHORN_ITERS:-3}"
       --ot-epsilon "${OT_EPSILON:-0.05}"
-      --ot-layer-temperature "${OT_LAYER_TEMPERATURE:-0.1}"
     )
     if [[ "${OT_LOG_STATS:-1}" == "1" ]]; then
       method_args+=(--ot-log-stats)
@@ -76,7 +75,6 @@ case "$MODE" in
       --ot-visual-tokens "${OT_VISUAL_TOKENS:-36}"
       --ot-sinkhorn-iters "${OT_SINKHORN_ITERS:-3}"
       --ot-epsilon "${OT_EPSILON:-0.05}"
-      --ot-layer-temperature "${OT_LAYER_TEMPERATURE:-0.1}"
     )
     ;;
   *)

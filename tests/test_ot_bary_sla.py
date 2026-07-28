@@ -122,7 +122,6 @@ class OTBarySLATests(unittest.TestCase):
             visual_tokens=4,
             epsilon=0.05,
             sinkhorn_iters=20,
-            layer_temperature=0.1,
         )
         method.cache_visual_features(visual)
         weights, details = method.compute_layer_weights(

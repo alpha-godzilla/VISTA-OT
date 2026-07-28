@@ -43,13 +43,12 @@ def parse_args():
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=1994)
     parser.add_argument("--vsv-lambda", type=float, default=0.17)
-    parser.add_argument("--logits-layers", default="26,30")
+    parser.add_argument("--logits-layers", default="25,30")
     parser.add_argument("--logits-alpha", type=float, default=0.3)
     parser.add_argument("--ot-topk", type=int, default=8)
     parser.add_argument("--ot-visual-tokens", type=int, default=36)
     parser.add_argument("--ot-sinkhorn-iters", type=int, default=3)
     parser.add_argument("--ot-epsilon", type=float, default=0.05)
-    parser.add_argument("--ot-layer-temperature", type=float, default=0.1)
     return parser.parse_args()
 
 
@@ -67,7 +66,6 @@ def mode_args(cli_args, mode):
         ot_visual_tokens=cli_args.ot_visual_tokens,
         ot_sinkhorn_iters=cli_args.ot_sinkhorn_iters,
         ot_epsilon=cli_args.ot_epsilon,
-        ot_layer_temperature=cli_args.ot_layer_temperature,
         ot_log_stats=False,
         ot_force_uniform=mode == "uniform",
     )
@@ -222,7 +220,6 @@ def main():
             "ot_visual_tokens": args.ot_visual_tokens,
             "ot_sinkhorn_iters": args.ot_sinkhorn_iters,
             "ot_epsilon": args.ot_epsilon,
-            "ot_layer_temperature": args.ot_layer_temperature,
         },
         "results": results,
     }

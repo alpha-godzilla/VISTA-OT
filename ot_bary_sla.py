@@ -132,7 +132,6 @@ class OTBarySLA:
         visual_tokens: int = 36,
         epsilon: float = 0.05,
         sinkhorn_iters: int = 3,
-        layer_temperature: float = 0.1,
         special_token_ids: Optional[Iterable[int]] = None,
         log_stats: bool = False,
         force_uniform: bool = False,
@@ -149,17 +148,11 @@ class OTBarySLA:
             raise ValueError(
                 f"sinkhorn_iters must be positive; got {sinkhorn_iters}"
             )
-        if layer_temperature <= 0:
-            raise ValueError(
-                "layer_temperature must be positive; "
-                f"got {layer_temperature}"
-            )
 
         self.topk = topk
         self.visual_tokens = visual_tokens
         self.epsilon = epsilon
         self.sinkhorn_iters = sinkhorn_iters
-        self.layer_temperature = layer_temperature
         self.special_token_ids = tuple(
             sorted({int(token_id) for token_id in (special_token_ids or [])})
         )
@@ -406,7 +399,7 @@ class OTBarySLA:
                 )
             else:
                 layer_weights_fp32 = torch.softmax(
-                    layer_scores / self.layer_temperature,
+                    layer_scores,
                     dim=-1,
                 )
 
