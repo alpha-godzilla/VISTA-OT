@@ -6,13 +6,62 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
+def read_image_ids_file(path):
+    image_ids = []
+    seen = set()
+    with open(path, "r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            try:
+                image_id = int(value)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid COCO image ID at {path}:{line_number}: {value!r}"
+                ) from exc
+            if image_id in seen:
+                raise ValueError(
+                    f"Duplicate COCO image ID at {path}:{line_number}: {image_id}"
+                )
+            seen.add(image_id)
+            image_ids.append(image_id)
+
+    if not image_ids:
+        raise ValueError(f"No COCO image IDs found in {path}")
+    return image_ids
+
+
+def coco_image_id(img_file):
+    return int(os.path.splitext(img_file)[0][-12:])
+
+
 class COCODataSet(Dataset):
-    def __init__(self, data_path, trans):
+    def __init__(self, data_path, trans, image_ids=None):
         self.data_path = data_path
         self.trans = trans
 
         img_files = os.listdir(self.data_path)
-        random.shuffle(img_files)
+        if image_ids is None:
+            random.shuffle(img_files)
+        else:
+            id_to_file = {
+                coco_image_id(img_file): img_file
+                for img_file in img_files
+                if img_file.lower().endswith(".jpg")
+            }
+            missing = [
+                image_id for image_id in image_ids
+                if image_id not in id_to_file
+            ]
+            if missing:
+                preview = ", ".join(str(image_id) for image_id in missing[:10])
+                suffix = " ..." if len(missing) > 10 else ""
+                raise FileNotFoundError(
+                    f"{len(missing)} requested COCO images are missing from "
+                    f"{self.data_path}: {preview}{suffix}"
+                )
+            img_files = [id_to_file[image_id] for image_id in image_ids]
         self.img_files = img_files
 
     def __len__(self):
@@ -20,7 +69,7 @@ class COCODataSet(Dataset):
 
     def __getitem__(self, index):
         img_file = self.img_files[index]
-        img_id = int(img_file.split(".jpg")[0][-6:])
+        img_id = coco_image_id(img_file)
 
         image = Image.open(os.path.join(self.data_path, img_file)).convert("RGB")
         image = self.trans(image)

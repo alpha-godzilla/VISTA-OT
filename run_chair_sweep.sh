@@ -14,6 +14,7 @@ MODEL="${MODEL:-llava-1.5}"
 EXP_FOLDER="${EXP_FOLDER:-chair_eval}"
 SEED="${SEED:-1994}"
 SUBSET_SIZE="${SUBSET_SIZE:-500}"
+SUBSET_IDS_FILE="${SUBSET_IDS_FILE:-}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
 LOGITS_LAYERS="${LOGITS_LAYERS:-25,30}"
 
@@ -38,6 +39,10 @@ fi
 
 if ! [[ "$SUBSET_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   echo "SUBSET_SIZE must be a positive integer; got: $SUBSET_SIZE" >&2
+  exit 1
+fi
+if [[ -n "$SUBSET_IDS_FILE" ]] && [[ ! -f "$SUBSET_IDS_FILE" ]]; then
+  echo "Fixed CHAIR image ID file not found: $SUBSET_IDS_FILE" >&2
   exit 1
 fi
 
@@ -121,11 +126,17 @@ run_gpu_worker() {
     fi
 
     echo "[GPU $gpu] start gamma=$gamma lambda=$lambda (log: $log)"
+    local -a subset_args=()
+    if [[ -n "$SUBSET_IDS_FILE" ]]; then
+      subset_args=(--subset-ids-file "$SUBSET_IDS_FILE")
+    fi
+
     if ! CUDA_VISIBLE_DEVICES="$gpu" python chair_eval.py \
       --exp_folder "$EXP_FOLDER" \
       --model "$MODEL" \
       --data-path "$COCO_VAL2014_PATH" \
       --subset-size "$SUBSET_SIZE" \
+      "${subset_args[@]}" \
       --vsv \
       --vsv-lambda "$lambda" \
       --logits-aug \

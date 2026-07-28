@@ -6,6 +6,8 @@ cd "$SCRIPT_DIR"
 
 MODE="${MODE:-ot}"
 SUBSET_SIZE="${SUBSET_SIZE:-500}"
+SUBSET_IDS_FILE="${SUBSET_IDS_FILE:-}"
+SEED="${SEED:-1994}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 EXP_FOLDER="${EXP_FOLDER:-chair_ot_bary}"
 LOGITS_LAYERS="${LOGITS_LAYERS:-25,30}"
@@ -44,12 +46,20 @@ common_args=(
   --model llava-1.5
   --data-path "$VISTA_COCO_ROOT/val2014"
   --subset-size "$SUBSET_SIZE"
+  --seed "$SEED"
   --vsv
   --vsv-lambda "$VSV_LAMBDA"
   --logits-aug
   --logits-layers "$LOGITS_LAYERS"
   --logits-alpha "$LOGITS_ALPHA"
 )
+if [[ -n "$SUBSET_IDS_FILE" ]]; then
+  if [[ ! -f "$SUBSET_IDS_FILE" ]]; then
+    echo "Fixed CHAIR image ID file not found: $SUBSET_IDS_FILE" >&2
+    exit 1
+  fi
+  common_args+=(--subset-ids-file "$SUBSET_IDS_FILE")
+fi
 
 case "$MODE" in
   original)
@@ -86,6 +96,9 @@ esac
 echo "Mode: $MODE"
 echo "Model: $VISTA_LLAVA_MODEL_PATH"
 echo "COCO: $VISTA_COCO_ROOT"
+if [[ -n "$SUBSET_IDS_FILE" ]]; then
+  echo "Fixed CHAIR IDs: $SUBSET_IDS_FILE"
+fi
 echo "SLA layers: $LOGITS_LAYERS (inclusive)"
 
 CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" \

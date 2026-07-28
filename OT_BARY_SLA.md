@@ -71,6 +71,22 @@ Run the full 500-image OT evaluation:
 MODE=ot SUBSET_SIZE=500 CUDA_VISIBLE_DEVICES=0 bash run_chair_ot_bary.sh
 ```
 
+For reproducible comparisons, export the image IDs from an existing 500-row
+CHAIR result and reuse the resulting manifest:
+
+```bash
+python scripts/export_chair_image_ids.py \
+  exp_results/chair_eval/llava-1.5/seed1994_example.jsonl \
+  /data/sun_yuxi/datasets/coco/splits/chair_seed1994_500.txt
+
+SUBSET_IDS_FILE=/data/sun_yuxi/datasets/coco/splits/chair_seed1994_500.txt \
+SEED=1994 MODE=ot CUDA_VISIBLE_DEVICES=0 \
+bash run_chair_ot_bary.sh
+```
+
+The manifest must contain one unique integer COCO image ID per line. Its order
+is preserved, and random `--subset-size` sampling is disabled when it is set.
+
 Override OT parameters through environment variables:
 
 ```bash

@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 import myutils
-from eval_data_loader import COCODataSet
+from eval_data_loader import COCODataSet, read_image_ids_file
 from llava.utils import disable_torch_init
 from model_loader import ModelLoader
 from steering_vector import obtain_vsv, add_logits_flag, remove_logits_flag
@@ -25,6 +25,15 @@ def parse_args():
     parser.add_argument("--data-path", type=str, default=COCO_VAL2014_PATH, help="COCO val2014 image directory")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--subset-size", type=int, default=500)
+    parser.add_argument(
+        "--subset-ids-file",
+        type=str,
+        default=None,
+        help=(
+            "Text file containing one COCO image ID per line. When set, this "
+            "fixed ordered subset replaces random --subset-size sampling."
+        ),
+    )
 
     # Visual steering vector arguments
     parser.add_argument("--vsv", action="store_true", help='Use visual steering vector')
@@ -88,9 +97,24 @@ def main(args):
     # get model loader
     model_loader = ModelLoader(args.model)
     # get dataloader
-    coco_dataset = COCODataSet(data_path=args.data_path, trans=model_loader.image_processor)
+    fixed_image_ids = None
+    if args.subset_ids_file is not None:
+        fixed_image_ids = read_image_ids_file(args.subset_ids_file)
+        print(
+            f"Using {len(fixed_image_ids)} fixed COCO image IDs from "
+            f"{args.subset_ids_file}"
+        )
+    coco_dataset = COCODataSet(
+        data_path=args.data_path,
+        trans=model_loader.image_processor,
+        image_ids=fixed_image_ids,
+    )
     # get a randomly sample subdataset without replacement and fixed seed
-    if args.subset_size > 0 and args.subset_size < len(coco_dataset):
+    if (
+        fixed_image_ids is None
+        and args.subset_size > 0
+        and args.subset_size < len(coco_dataset)
+    ):
         subset_indices = np.random.choice(len(coco_dataset), args.subset_size, replace=False)
         coco_dataset = Subset(coco_dataset, subset_indices)
 
