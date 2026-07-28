@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--logits-aug", action="store_true", help='Use penultimate logits augmentation')
     parser.add_argument("--logits-layers", type=str, default='25,30', help='Layer for penultimate logits augmentation')
     parser.add_argument("--logits-alpha", type=float, default=0.3, help='Alpha for penultimate logits augmentation')
+    myutils.add_ot_bary_sla_arguments(parser)
 
     # Decoding arguments
     parser.add_argument("--max-new-tokens", type=int, default=512)
@@ -61,6 +62,7 @@ def get_file_name(args):
 def main(args):
     # bath size should be 1 as we are generating image specific steering vectors
     assert args.batch_size == 1, "Batch size should be 1"
+    myutils.validate_ot_bary_sla_arguments(args)
     # seed everything
     myutils.seed_everything(args.seed)
     # disable torch init
@@ -75,6 +77,13 @@ def main(args):
     if os.path.exists(result_file):
         exit(f"Result file {result_file} already exists. Exiting.")
     f = open(result_file, "w", encoding="utf-8")
+    stats_file = None
+    if args.use_ot_bary_sla and args.ot_log_stats:
+        stats_file = open(
+            os.path.join(args.save_dir, args.file_name + "_ot_stats.jsonl"),
+            "w",
+            encoding="utf-8",
+        )
 
     # get model loader
     model_loader = ModelLoader(args.model)
@@ -113,7 +122,11 @@ def main(args):
                     add_vsv_layers(model_loader.llm_model, torch.stack([visual_vector], dim=1).cuda(), [args.vsv_lambda], args.layers)
                     
                 # add logits augmentation flag
-                add_logits_flag(model_loader.llm_model, args)
+                add_logits_flag(
+                    model_loader.llm_model,
+                    args,
+                    tokenizer=model_loader.tokenizer,
+                )
 
                 # generate
                 if args.do_sample:
@@ -136,7 +149,7 @@ def main(args):
                     )
 
                 # remove logits augmentation flag
-                remove_logits_flag(model_loader.llm_model)
+                ot_diagnostics = remove_logits_flag(model_loader.llm_model)
 
                 if args.vsv:
                     # remove steering vectors 
@@ -148,7 +161,20 @@ def main(args):
         for i in range(len(output_text)):
             f.write(json.dumps({"image_id": int(img_id[i]), "caption": output_text[i]}) + "\n")
         f.flush()
+        if stats_file is not None:
+            stats_file.write(
+                json.dumps(
+                    {
+                        "image_id": int(img_id[0]),
+                        **ot_diagnostics,
+                    }
+                )
+                + "\n"
+            )
+            stats_file.flush()
     f.close()
+    if stats_file is not None:
+        stats_file.close()
 
 
 if __name__ == "__main__":

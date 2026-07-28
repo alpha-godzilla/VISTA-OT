@@ -4,6 +4,7 @@ import torch
 from transformers import PreTrainedModel
 from llm_layers import get_layers
 from myutils import PCA
+from ot_bary_sla import OTBarySLA
 
 
 @dataclass
@@ -129,16 +130,47 @@ def obtain_vsv(args, model, kwargs_list, rank=1):
     return direction, (neg_emb).view(hidden_states[demonstration_id][0].size(0), hidden_states[demonstration_id][0].size(1))
 
 
-def add_logits_flag(model, args):
+def add_logits_flag(model, args, tokenizer=None):
     assert not hasattr(model, 'logits_aug')
     assert not hasattr(model, 'logits_layers')
     assert not hasattr(model, 'logits_alpha')
+    assert not hasattr(model, 'use_ot_bary_sla')
+    assert not hasattr(model, 'ot_bary_sla')
+
     model.logits_aug = args.logits_aug
     model.logits_layers = args.logits_layers
     model.logits_alpha = args.logits_alpha
+    model.use_ot_bary_sla = getattr(args, 'use_ot_bary_sla', False)
+    if model.use_ot_bary_sla and not model.logits_aug:
+        raise ValueError("OT-BarySLA requires --logits-aug")
+
+    if model.use_ot_bary_sla:
+        special_token_ids = (
+            tokenizer.all_special_ids if tokenizer is not None else []
+        )
+        model.ot_bary_sla = OTBarySLA(
+            topk=getattr(args, 'ot_topk', 8),
+            visual_tokens=getattr(args, 'ot_visual_tokens', 36),
+            epsilon=getattr(args, 'ot_epsilon', 0.05),
+            sinkhorn_iters=getattr(args, 'ot_sinkhorn_iters', 3),
+            layer_temperature=getattr(args, 'ot_layer_temperature', 0.1),
+            special_token_ids=special_token_ids,
+            log_stats=getattr(args, 'ot_log_stats', False),
+            force_uniform=getattr(args, 'ot_force_uniform', False),
+        )
+    else:
+        model.ot_bary_sla = None
 
 
 def remove_logits_flag(model):
+    diagnostics = {}
+    if model.ot_bary_sla is not None:
+        diagnostics = model.ot_bary_sla.get_diagnostics()
+        model.ot_bary_sla.clear()
+
     del model.logits_aug
     del model.logits_layers
     del model.logits_alpha
+    del model.use_ot_bary_sla
+    del model.ot_bary_sla
+    return diagnostics

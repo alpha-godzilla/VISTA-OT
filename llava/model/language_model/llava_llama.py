@@ -97,10 +97,38 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 all_hidden_states = all_hidden_states[1:]
                 s_idx, e_idx = tuple(self.logits_layers.split(','))
                 tar_layers = list(range(int(s_idx), int(e_idx)+1))
-                aug_logits = [self.lm_head(all_hidden_states[idx]) for idx in tar_layers]
-                # average logits
-                aug_logits = torch.stack(aug_logits).mean(dim=0)
-                logits = self.logits_alpha * aug_logits + (1 - self.logits_alpha) * logits
+                if getattr(self, "use_ot_bary_sla", False):
+                    if self.ot_bary_sla is None:
+                        raise RuntimeError(
+                            "OT-BarySLA is enabled but not initialized"
+                        )
+                    # Generation only consumes the current token's logits. This
+                    # avoids materializing [B, w, sequence, vocab] at prefill.
+                    early_logits = torch.stack(
+                        [
+                            self.lm_head(all_hidden_states[idx][:, -1, :])
+                            for idx in tar_layers
+                        ],
+                        dim=1,
+                    )
+                    mixed_logits, _ = self.ot_bary_sla.aggregate(
+                        early_logits=early_logits,
+                        final_logits=logits[:, -1, :],
+                        input_embedding_weight=self.get_input_embeddings().weight,
+                        gamma=self.logits_alpha,
+                    )
+                    if logits.shape[1] == 1:
+                        logits = mixed_logits.unsqueeze(1)
+                    else:
+                        logits = torch.cat(
+                            [logits[:, :-1, :], mixed_logits.unsqueeze(1)],
+                            dim=1,
+                        )
+                else:
+                    aug_logits = [self.lm_head(all_hidden_states[idx]) for idx in tar_layers]
+                    # average logits
+                    aug_logits = torch.stack(aug_logits).mean(dim=0)
+                    logits = self.logits_alpha * aug_logits + (1 - self.logits_alpha) * logits
         # -----------------------------------------------------------------------------------------
 
         loss = None

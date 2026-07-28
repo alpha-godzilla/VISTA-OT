@@ -34,6 +34,52 @@ def prepare_template(args):
     return template
 
 
+def add_ot_bary_sla_arguments(parser):
+    group = parser.add_argument_group("OT-BarySLA")
+    group.add_argument(
+        "--use-ot-bary-sla",
+        action="store_true",
+        help="Use OT-derived dynamic weights instead of uniform SLA weights.",
+    )
+    group.add_argument("--ot-topk", type=int, default=8)
+    group.add_argument("--ot-visual-tokens", type=int, default=36)
+    group.add_argument("--ot-sinkhorn-iters", type=int, default=3)
+    group.add_argument("--ot-epsilon", type=float, default=0.05)
+    group.add_argument("--ot-layer-temperature", type=float, default=0.1)
+    group.add_argument(
+        "--ot-log-stats",
+        action="store_true",
+        help="Save generation-level OT diagnostics without per-token printing.",
+    )
+    group.add_argument(
+        "--ot-force-uniform",
+        action="store_true",
+        help="Regression mode: force uniform early-layer weights.",
+    )
+    return parser
+
+
+def validate_ot_bary_sla_arguments(args):
+    if not getattr(args, "use_ot_bary_sla", False):
+        return
+    if args.model != "llava-1.5":
+        raise ValueError(
+            "The first OT-BarySLA integration supports only --model llava-1.5"
+        )
+    if not args.logits_aug:
+        raise ValueError("--use-ot-bary-sla requires --logits-aug")
+    if not 0.0 <= args.logits_alpha <= 1.0:
+        raise ValueError("--logits-alpha must be in [0, 1]")
+    try:
+        start_layer, end_layer = map(int, args.logits_layers.split(","))
+    except ValueError as exc:
+        raise ValueError(
+            "--logits-layers must be an inclusive START,END pair"
+        ) from exc
+    if start_layer > end_layer:
+        raise ValueError("--logits-layers START must not exceed END")
+
+
 def prepare_common_fileparts(args):
     file_parts = []
 
@@ -54,6 +100,19 @@ def prepare_common_fileparts(args):
         file_parts.append("logaug")
         file_parts.append(f"loglayer_{args.logits_layers}")
         file_parts.append(f"logalpha_{args.logits_alpha}")
+        if getattr(args, "use_ot_bary_sla", False):
+            file_parts.extend(
+                [
+                    "otbary",
+                    f"m{args.ot_topk}",
+                    f"k{args.ot_visual_tokens}",
+                    f"it{args.ot_sinkhorn_iters}",
+                    f"eps{args.ot_epsilon}",
+                    f"tau{args.ot_layer_temperature}",
+                ]
+            )
+            if args.ot_force_uniform:
+                file_parts.append("uniform")
 
     # decoding strategy
     if args.do_sample:

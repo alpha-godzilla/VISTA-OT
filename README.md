@@ -80,6 +80,9 @@ bash run_chair.sh
 # Sweep CHAIR gamma/lambda settings on six GPUs and summarize the metrics.
 bash run_chair_sweep.sh
 
+# Run the optional OT-BarySLA extension.
+bash run_chair_ot_bary.sh
+
 # For POPE evaluation (specify split with --pope-type).
 bash run_pope.sh
 
@@ -88,6 +91,17 @@ bash run_mmhal.sh
 ```
 
 Please check the corresponding bash script for how to read results.
+
+### OT-BarySLA
+
+This copy includes an optional, training-free OT-BarySLA implementation for
+LLaVA-1.5. It dynamically weights VISTA's selected early-layer logits using a
+small OMIT-style optimal-transport problem over projected visual tokens and
+top-ranked token embeddings. The original VISTA path remains the default and
+is unchanged when `--use-ot-bary-sla` is absent.
+
+See [OT_BARY_SLA.md](OT_BARY_SLA.md) for the method, commands, tests, and
+benchmark procedure.
 
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.

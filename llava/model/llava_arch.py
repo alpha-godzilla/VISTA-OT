@@ -119,6 +119,11 @@ class LlavaMetaForCausalLM(ABC):
         else:
             image_features = self.encode_images(images)
 
+        if getattr(self, "use_ot_bary_sla", False):
+            if self.ot_bary_sla is None:
+                raise RuntimeError("OT-BarySLA is enabled but not initialized")
+            self.ot_bary_sla.cache_visual_features(image_features)
+
         new_input_embeds = []
         new_labels = [] if labels is not None else None
         cur_image_idx = 0

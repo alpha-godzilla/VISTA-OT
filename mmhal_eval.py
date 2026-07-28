@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--logits-aug", action="store_true", help='Use penultimate logits augmentation')
     parser.add_argument("--logits-layers", type=str, default='25,30', help='Layer for penultimate logits augmentation')
     parser.add_argument("--logits-alpha", type=float, default=0.3, help='Alpha for penultimate logits augmentation')
+    myutils.add_ot_bary_sla_arguments(parser)
 
     # Decoding arguments
     parser.add_argument("--max-new-tokens", type=int, default=512)
@@ -76,6 +77,7 @@ def load_image(image_file, data_path):
 def main(args):
     # bath size should be 1 as we are generating image specific steering vectors
     assert args.batch_size == 1, "Batch size should be 1"
+    myutils.validate_ot_bary_sla_arguments(args)
     # seed everything
     myutils.seed_everything(args.seed)
     # disable torch init
@@ -119,7 +121,11 @@ def main(args):
                     add_vsv_layers(model_loader.llm_model, torch.stack([visual_vector], dim=1).cuda(), [args.vsv_lambda], args.layers)
 
                 # add logits augmentation flag
-                add_logits_flag(model_loader.llm_model, args)
+                add_logits_flag(
+                    model_loader.llm_model,
+                    args,
+                    tokenizer=model_loader.tokenizer,
+                )
 
                 # generate
                 if args.do_sample:
@@ -141,7 +147,7 @@ def main(args):
                     )
                 
                 # remove logits augmentation flag
-                remove_logits_flag(model_loader.llm_model)
+                ot_diagnostics = remove_logits_flag(model_loader.llm_model)
                 
                 if args.vsv:
                     # remove steering vectors 
@@ -152,6 +158,8 @@ def main(args):
 
         # print(idx, response)
         line['model_answer'] = output_text[0]
+        if ot_diagnostics:
+            line['ot_diagnostics'] = ot_diagnostics
 
     json.dump(json_data, f, indent=2)
     f.close()

@@ -36,6 +36,7 @@ def parse_args():
     parser.add_argument("--logits-aug", action="store_true", help='Use penultimate logits augmentation')
     parser.add_argument("--logits-layers", type=str, default='25,30', help='Layer for penultimate logits augmentation')
     parser.add_argument("--logits-alpha", type=float, default=0.3, help='Alpha for penultimate logits augmentation')
+    myutils.add_ot_bary_sla_arguments(parser)
 
     # Decoding arguments
     parser.add_argument("--max-new-tokens", type=int, default=32)
@@ -64,6 +65,7 @@ def get_file_name(args):
 def main(args):
     # bath size should be 1 as we are generating image specific steering vectors
     assert args.batch_size == 1, "Batch size should be 1"
+    myutils.validate_ot_bary_sla_arguments(args)
     # seed everything
     myutils.seed_everything(args.seed)
     # disable torch init
@@ -123,7 +125,11 @@ def main(args):
                     add_vsv_layers(model_loader.llm_model, torch.stack([visual_vector], dim=1).cuda(), [args.vsv_lambda])
 
                 # add logits augmentation flag
-                add_logits_flag(model_loader.llm_model, args)
+                add_logits_flag(
+                    model_loader.llm_model,
+                    args,
+                    tokenizer=model_loader.tokenizer,
+                )
 
                 # generate
                 if args.do_sample:
@@ -145,7 +151,7 @@ def main(args):
                     )
                 
                 # remove logits augmentation flag
-                remove_logits_flag(model_loader.llm_model)
+                ot_diagnostics = remove_logits_flag(model_loader.llm_model)
 
                 if args.vsv:
                     # remove steering vectors 
@@ -155,12 +161,15 @@ def main(args):
 
         # write to file
         for i in range(len(output_text)):
-            f.write(json.dumps({
-                        "query": query[i],
-                        "label": label[i],
-                        "ans": output_text[i],
-                        "question": questions[i],
-                        }) + "\n")
+            record = {
+                "query": query[i],
+                "label": label[i],
+                "ans": output_text[i],
+                "question": questions[i],
+            }
+            if ot_diagnostics:
+                record["ot_diagnostics"] = ot_diagnostics
+            f.write(json.dumps(record) + "\n")
         f.flush()
     f.close()
 
