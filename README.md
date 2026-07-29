@@ -86,6 +86,9 @@ bash run_chair_ot_bary.sh
 # Refine OT top-k and visual-token counts around the current best point.
 bash run_chair_ot_topk_visual_sweep.sh
 
+# Sweep larger OT visual grids (100/196/324/576) and top-k (8/16/32/64).
+bash run_chair_ot_large_visual_sweep.sh
+
 # For POPE evaluation (specify split with --pope-type).
 bash run_pope.sh
 

@@ -105,6 +105,20 @@ GPU assignment. CHAIR metrics and logs are written under
 summary unchanged. Override the grid with, for example,
 `TOPKS="12 16 20" VISUAL_TOKENS="49 64" GPU_IDS="0 1"`.
 
+Test larger visual grids with `topk={8,16,32,64}` and
+`visual_tokens={100,196,324,576}`:
+
+```bash
+SUBSET_IDS_FILE=/data/sun_yuxi/datasets/coco/splits/chair_seed1994_500.txt \
+GPU_IDS="0 1 2 3 4 5" \
+bash run_chair_ot_large_visual_sweep.sh
+```
+
+This launches 16 configurations using the same pending-only scheduler.
+Completed results are reused on rerun. Logs, the manifest, and the automatic
+CHAIR CSV/Markdown summaries are isolated under
+`exp_results/chair_ot_large_visual_sweep/`.
+
 Override OT parameters through environment variables:
 
 ```bash
