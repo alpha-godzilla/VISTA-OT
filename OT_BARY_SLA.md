@@ -87,18 +87,22 @@ bash run_chair_ot_bary.sh
 The manifest must contain one unique integer COCO image ID per line. Its order
 is preserved, and random `--subset-size` sampling is disabled when it is set.
 
-Run the default six-GPU OT grid with fixed `gamma=0.3`, `lambda=0.17`,
-`topk={4,8,16,32}`, and `visual_tokens={16,36,64}`:
+After the initial grid identifies `topk=16, visual_tokens=64` as the strongest
+balanced point, run the default six-GPU refinement with fixed `gamma=0.3`,
+`lambda=0.17`, `topk={8,10,12,14,16,18,20,24,32}`, and
+`visual_tokens={49,64,81}`:
 
 ```bash
 SUBSET_IDS_FILE=/data/sun_yuxi/datasets/coco/splits/chair_seed1994_500.txt \
 bash run_chair_ot_topk_visual_sweep.sh
 ```
 
-The 12 configurations are assigned round-robin to GPUs `0 1 2 3 4 5`.
-Completed 500-caption results are reused. CHAIR metrics and logs are written
-under `exp_results/chair_ot_topk_visual_sweep/`. Override the grid with, for
-example, `TOPKS="4 8" VISUAL_TOKENS="16 36" GPU_IDS="0 1"`.
+The three completed 64-token anchors (`8/64`, `16/64`, and `32/64`) are reused,
+so the refinement runs 24 new configurations, balanced as four jobs per GPU
+on `0 1 2 3 4 5`. Any other complete 500-caption result is also skipped before
+GPU assignment. CHAIR metrics and logs are written under
+`exp_results/chair_ot_topk_visual_sweep/`. Override the grid with, for example,
+`TOPKS="12 16 20" VISUAL_TOKENS="49 64" GPU_IDS="0 1"`.
 
 Override OT parameters through environment variables:
 

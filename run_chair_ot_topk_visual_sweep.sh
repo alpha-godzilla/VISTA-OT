@@ -4,8 +4,11 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-read -r -a TOPKS <<< "${TOPKS:-4 8 16 32}"
-read -r -a VISUAL_TOKENS <<< "${VISUAL_TOKENS:-16 36 64}"
+# Refine around the first sweep's best point (topk=16, visual_tokens=64).
+# The three completed 64-token anchors (topk=8,16,32) are reused, leaving
+# exactly 24 new jobs by default.
+read -r -a TOPKS <<< "${TOPKS:-8 10 12 14 16 18 20 24 32}"
+read -r -a VISUAL_TOKENS <<< "${VISUAL_TOKENS:-49 64 81}"
 read -r -a GPUS <<< "${GPU_IDS:-0 1 2 3 4 5}"
 
 MODEL="${MODEL:-llava-1.5}"
@@ -121,15 +124,23 @@ is_complete_result() {
 declare -a JOB_TOPKS=()
 declare -a JOB_VISUAL_TOKENS=()
 declare -a JOB_RESULTS=()
+declare -a PENDING_INDICES=()
 
 job_index=0
+pending_index=0
 {
   printf 'topk\tvisual_tokens\tgpu\tresult_jsonl\tchair_json\n'
   for topk in "${TOPKS[@]}"; do
     for visual_tokens in "${VISUAL_TOKENS[@]}"; do
-      gpu="${GPUS[$((job_index % ${#GPUS[@]}))]}"
       result="$(result_path "$topk" "$visual_tokens")"
       chair_json="${result%.jsonl}_chair.json"
+      if is_complete_result "$result"; then
+        gpu="-1"
+      else
+        gpu="${GPUS[$((pending_index % ${#GPUS[@]}))]}"
+        PENDING_INDICES+=("$job_index")
+        ((pending_index += 1))
+      fi
       printf '%s\t%s\t%s\t%s\t%s\n' \
         "$topk" "$visual_tokens" "$gpu" "$result" "$chair_json"
       JOB_TOPKS+=("$topk")
@@ -143,9 +154,10 @@ job_index=0
 run_gpu_worker() {
   local worker_index="$1"
   local gpu="${GPUS[$worker_index]}"
-  local index topk visual_tokens result stats log backup
+  local pending_position index topk visual_tokens result stats log backup
 
-  for ((index=worker_index; index<${#JOB_TOPKS[@]}; index+=${#GPUS[@]})); do
+  for ((pending_position=worker_index; pending_position<${#PENDING_INDICES[@]}; pending_position+=${#GPUS[@]})); do
+    index="${PENDING_INDICES[$pending_position]}"
     topk="${JOB_TOPKS[$index]}"
     visual_tokens="${JOB_VISUAL_TOKENS[$index]}"
     result="${JOB_RESULTS[$index]}"
@@ -211,7 +223,8 @@ trap stop_workers INT TERM
 
 echo "Fixed gamma=$GAMMA lambda=$VSV_LAMBDA"
 echo "Fixed image IDs: $SUBSET_IDS_FILE ($fixed_id_count images)"
-echo "Launching ${#JOB_TOPKS[@]} runs on GPUs: ${GPUS[*]}"
+echo "Grid entries: ${#JOB_TOPKS[@]}; reused: $((${#JOB_TOPKS[@]} - ${#PENDING_INDICES[@]})); pending: ${#PENDING_INDICES[@]}"
+echo "Launching pending runs on GPUs: ${GPUS[*]}"
 for ((worker=0; worker<${#GPUS[@]}; worker+=1)); do
   run_gpu_worker "$worker" &
   WORKER_PIDS+=("$!")
@@ -237,6 +250,11 @@ for ((index=0; index<${#JOB_TOPKS[@]}; index+=1)); do
   result="${JOB_RESULTS[$index]}"
   chair_json="${result%.jsonl}_chair.json"
   eval_log="$LOG_DIR/topk_${topk}_visual_${visual_tokens}_chair.log"
+
+  if [[ -f "$chair_json" ]] && [[ "$chair_json" -nt "$result" ]]; then
+    echo "Reuse CHAIR evaluation: topk=$topk visual_tokens=$visual_tokens"
+    continue
+  fi
 
   if ! python chair_ans.py \
     --cap_file "$result" \

@@ -83,7 +83,7 @@ bash run_chair_sweep.sh
 # Run the optional OT-BarySLA extension.
 bash run_chair_ot_bary.sh
 
-# Sweep OT top-k and visual-token counts on six GPUs.
+# Refine OT top-k and visual-token counts around the current best point.
 bash run_chair_ot_topk_visual_sweep.sh
 
 # For POPE evaluation (specify split with --pope-type).
