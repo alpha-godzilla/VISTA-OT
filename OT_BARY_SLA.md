@@ -101,7 +101,8 @@ The three completed 64-token anchors (`8/64`, `16/64`, and `32/64`) are reused,
 so the refinement runs 24 new configurations, balanced as four jobs per GPU
 on `0 1 2 3 4 5`. Any other complete 500-caption result is also skipped before
 GPU assignment. CHAIR metrics and logs are written under
-`exp_results/chair_ot_topk_visual_sweep/`. Override the grid with, for example,
+`exp_results/chair_ot_topk_visual_refine_sweep/`, leaving the initial sweep
+summary unchanged. Override the grid with, for example,
 `TOPKS="12 16 20" VISUAL_TOKENS="49 64" GPU_IDS="0 1"`.
 
 Override OT parameters through environment variables:

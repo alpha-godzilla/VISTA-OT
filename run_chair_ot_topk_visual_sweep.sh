@@ -41,11 +41,11 @@ COCO_VAL2014_PATH="$VISTA_COCO_ROOT/val2014"
 COCO_ANNOTATIONS_PATH="$VISTA_COCO_ROOT/annotations"
 CHAIR_CACHE="${CHAIR_CACHE:-$VISTA_COCO_ROOT/chair.pkl}"
 RESULT_DIR="$SCRIPT_DIR/exp_results/$EXP_FOLDER/$MODEL"
-SWEEP_DIR="${SWEEP_DIR:-$SCRIPT_DIR/exp_results/chair_ot_topk_visual_sweep}"
+SWEEP_DIR="${SWEEP_DIR:-$SCRIPT_DIR/exp_results/chair_ot_topk_visual_refine_sweep}"
 LOG_DIR="$SWEEP_DIR/logs"
 MANIFEST="$SWEEP_DIR/manifest.tsv"
-SUMMARY_CSV="$SWEEP_DIR/chair_ot_topk_visual_summary.csv"
-SUMMARY_MD="$SWEEP_DIR/chair_ot_topk_visual_summary.md"
+SUMMARY_CSV="$SWEEP_DIR/chair_ot_topk_visual_refine_summary.csv"
+SUMMARY_MD="$SWEEP_DIR/chair_ot_topk_visual_refine_summary.md"
 
 if (( ${#TOPKS[@]} == 0 || ${#VISUAL_TOKENS[@]} == 0 )); then
   echo "TOPKS and VISUAL_TOKENS must each contain at least one value." >&2
