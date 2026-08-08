@@ -111,6 +111,7 @@ run_one() {
   local exp_folder="$VISTA_EXP_FOLDER"
   local result="$(vista_result_path "$seed")"
   local log_file="$COMPARE_DIR/logs/seed_${seed}_${mode}.log"
+  local backup stats_file
   local -a method_args=(
     --vsv
     --vsv-lambda "$VSV_LAMBDA"
@@ -137,8 +138,15 @@ run_one() {
     return
   fi
   if [[ -f "$result" ]]; then
-    echo "Partial result exists and will not be overwritten: $result" >&2
-    return 1
+    backup="${result}.partial.$(date +%Y%m%d_%H%M%S)"
+    mv "$result" "$backup"
+    echo "[GPU $gpu] preserved partial result as: $backup"
+  fi
+  stats_file="${result%.jsonl}_ot_stats.jsonl"
+  if [[ -f "$stats_file" ]]; then
+    backup="${stats_file}.partial.$(date +%Y%m%d_%H%M%S)"
+    mv "$stats_file" "$backup"
+    echo "[GPU $gpu] preserved partial OT stats as: $backup"
   fi
 
   echo "[GPU $gpu] start seed=$seed mode=$mode"
