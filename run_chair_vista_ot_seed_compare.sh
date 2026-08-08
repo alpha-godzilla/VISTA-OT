@@ -29,6 +29,15 @@ OT_EXP_FOLDER="${OT_EXP_FOLDER:-chair_vista_ot_seed_compare_ot}"
 export VISTA_COCO_ROOT="${VISTA_COCO_ROOT:-/data/sun_yuxi/datasets/coco}"
 export NLTK_DATA="${NLTK_DATA:-/data/sun_yuxi/nltk_data}"
 
+# The compute nodes have no Hub access. Prefer the shared data-disk cache that
+# already contains LLaVA's CLIP vision tower, while preserving explicit user
+# cache settings when they are provided.
+if [[ -z "${HF_HOME:-}" && -z "${HUGGINGFACE_HUB_CACHE:-}" ]] && [[ -d /data/sun_yuxi/huggingface ]]; then
+  export HF_HOME=/data/sun_yuxi/huggingface
+fi
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+
 if [[ -z "${VISTA_LLAVA_MODEL_PATH:-}" ]]; then
   for candidate in \
     /data/sun_yuxi/models/llava-v1.5-7b \
