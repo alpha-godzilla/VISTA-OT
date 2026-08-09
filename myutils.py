@@ -103,6 +103,8 @@ def prepare_common_fileparts(args):
             file_parts.extend(
                 [
                     "otbary",
+                    "vdust",
+                    "tlogit",
                     f"m{args.ot_topk}",
                     f"k{args.ot_visual_tokens}",
                     f"it{args.ot_sinkhorn_iters}",

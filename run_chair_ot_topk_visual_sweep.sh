@@ -4,9 +4,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Refine around the first sweep's best point (topk=16, visual_tokens=64).
-# The three completed 64-token anchors (topk=8,16,32) are reused, leaving
-# exactly 24 new jobs by default.
+# Re-evaluate the refinement grid with the visual-dustbin/text-logit marginal.
+# Legacy two-dustbin results use a different filename and are never reused.
 read -r -a TOPKS <<< "${TOPKS:-8 10 12 14 16 18 20 24 32}"
 read -r -a VISUAL_TOKENS <<< "${VISUAL_TOKENS:-49 64 81}"
 read -r -a GPUS <<< "${GPU_IDS:-0 1 2 3 4 5}"
@@ -41,8 +40,8 @@ COCO_VAL2014_PATH="$VISTA_COCO_ROOT/val2014"
 COCO_ANNOTATIONS_PATH="$VISTA_COCO_ROOT/annotations"
 CHAIR_CACHE="${CHAIR_CACHE:-$VISTA_COCO_ROOT/chair.pkl}"
 RESULT_DIR="$SCRIPT_DIR/exp_results/$EXP_FOLDER/$MODEL"
-SWEEP_DIR="${SWEEP_DIR:-$SCRIPT_DIR/exp_results/chair_ot_topk_visual_refine_sweep}"
-SUMMARY_BASENAME="${SUMMARY_BASENAME:-chair_ot_topk_visual_refine_summary}"
+SWEEP_DIR="${SWEEP_DIR:-$SCRIPT_DIR/exp_results/chair_ot_topk_visual_vdust_tlogit_refine_sweep}"
+SUMMARY_BASENAME="${SUMMARY_BASENAME:-chair_ot_topk_visual_vdust_tlogit_refine_summary}"
 LOG_DIR="$SWEEP_DIR/logs"
 MANIFEST="$SWEEP_DIR/manifest.tsv"
 SUMMARY_CSV="$SWEEP_DIR/$SUMMARY_BASENAME.csv"
@@ -104,7 +103,7 @@ mkdir -p "$RESULT_DIR" "$LOG_DIR" "$NLTK_DATA"
 result_path() {
   local topk="$1"
   local visual_tokens="$2"
-  printf '%s/seed%s_vsv_lambda_%s_logaug_loglayer_%s_logalpha_%s_otbary_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
+  printf '%s/seed%s_vsv_lambda_%s_logaug_loglayer_%s_logalpha_%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
     "$RESULT_DIR" \
     "$SEED" \
     "$VSV_LAMBDA" \

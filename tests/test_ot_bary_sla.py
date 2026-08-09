@@ -65,7 +65,7 @@ class OTBarySLATests(unittest.TestCase):
             return_details=True,
         )
 
-        self.assertEqual(details["transport_plan"].shape, (2, 5, 10, 9))
+        self.assertEqual(details["transport_plan"].shape, (2, 5, 10, 8))
         self.assertEqual(details["layer_scores"].shape, (2, 5))
         self.assertEqual(weights.shape, (2, 5))
         self.assertTrue(torch.all(weights >= 0))
@@ -152,7 +152,37 @@ class OTBarySLATests(unittest.TestCase):
         self.assertFalse(torch.any(ids == 0))
         self.assertFalse(torch.any(ids == 1))
 
-    def test_layer_score_excludes_global_dustbin_row_and_column(self):
+    def test_text_marginal_uses_selected_logit_probabilities(self):
+        method = OTBarySLA(topk=4, visual_tokens=9)
+        method.cache_visual_features(self.visual)
+        _, details = method.compute_layer_weights(
+            self.early_logits,
+            self.embedding,
+            return_details=True,
+        )
+        selected_logits = torch.gather(
+            self.early_logits,
+            dim=-1,
+            index=details["candidate_ids"],
+        )
+        expected = torch.softmax(selected_logits.float(), dim=-1)
+        torch.testing.assert_close(details["target_marginal"], expected)
+        self.assertEqual(details["target_marginal"].shape, (2, 5, 4))
+
+    def test_visual_marginal_keeps_uniform_avg_dustbin_weight(self):
+        method = OTBarySLA(topk=4, visual_tokens=9)
+        method.cache_visual_features(self.visual)
+        _, details = method.compute_layer_weights(
+            self.early_logits,
+            self.embedding,
+            return_details=True,
+        )
+        torch.testing.assert_close(
+            details["source_marginal"],
+            torch.full((1, 1, 10), 0.1),
+        )
+
+    def test_layer_score_excludes_only_visual_dustbin_row(self):
         method = OTBarySLA(topk=4, visual_tokens=9)
         method.cache_visual_features(self.visual)
         _, details = method.compute_layer_weights(
@@ -161,8 +191,8 @@ class OTBarySLATests(unittest.TestCase):
             return_details=True,
         )
         expected = (
-            details["transport_plan"][..., :-1, :-1]
-            * details["similarity"][..., :-1, :-1]
+            details["transport_plan"][..., :-1, :]
+            * details["similarity"][..., :-1, :]
         ).sum(dim=(-2, -1))
         torch.testing.assert_close(details["layer_scores"], expected)
 
@@ -201,7 +231,7 @@ class OTBarySLATests(unittest.TestCase):
         self.assertEqual(len(diagnostics["mean_layer_weights"]), 5)
         self.assertIn("mean_local_transport_mass", diagnostics)
         self.assertIn("mean_dustbin_to_token_mass", diagnostics)
-        self.assertIn("mean_token_to_dustbin_mass", diagnostics)
+        self.assertNotIn("mean_token_to_dustbin_mass", diagnostics)
 
 
 if __name__ == "__main__":

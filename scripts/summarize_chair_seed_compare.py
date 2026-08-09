@@ -62,6 +62,8 @@ def main():
     lines = [
         "# VISTA vs VISTA-OT Seed Comparison",
         "",
+        "OT marginal design: uniform visual tokens + average visual dustbin; "
+        "top-k text-logit probabilities without a text dustbin.",
         "VISTA-OT: topk=32, visual_tokens=81, Sinkhorn iterations=3, epsilon=0.05.",
         "Fixed VSV lambda=0.17 and SLA gamma (`--logits-alpha`)=0.3.",
         "Each row is paired: VISTA and VISTA-OT share the same fixed val2014 image IDs.",

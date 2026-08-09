@@ -15,9 +15,13 @@ augmented_logits = mean(early_logits, layer)
 
 OT-BarySLA uses projected LLaVA image tokens and each layer's top-M token
 embeddings to construct a small cosine-cost OT problem. It appends one global
-visual node and one global textual node, uses uniform marginals, and solves the
-extended problem with float32 log-domain Sinkhorn iterations. Only the
-local-to-local transport block contributes to the layer score.
+average node only on the visual side. The visual marginal remains uniform over
+the pooled visual tokens and their average dustbin, while the text marginal is
+the softmax distribution of that layer's selected top-M logits. There is no
+text dustbin. The extended problem is solved with float32 log-domain Sinkhorn
+iterations, and only the non-dustbin visual rows contribute to the layer score.
+New result filenames include `otbary_vdust_tlogit` so they cannot be confused
+with results produced by the previous two-dustbin, uniform-marginal method.
 
 The scores become a distribution over early layers:
 
@@ -87,9 +91,8 @@ bash run_chair_ot_bary.sh
 The manifest must contain one unique integer COCO image ID per line. Its order
 is preserved, and random `--subset-size` sampling is disabled when it is set.
 
-After the initial grid identifies `topk=16, visual_tokens=64` as the strongest
-balanced point, run the default six-GPU refinement with fixed `gamma=0.3`,
-`lambda=0.17`, `topk={8,10,12,14,16,18,20,24,32}`, and
+Run the default six-GPU refinement for the new marginal design with fixed
+`gamma=0.3`, `lambda=0.17`, `topk={8,10,12,14,16,18,20,24,32}`, and
 `visual_tokens={49,64,81}`:
 
 ```bash
@@ -97,12 +100,12 @@ SUBSET_IDS_FILE=/data/sun_yuxi/datasets/coco/splits/chair_seed1994_500.txt \
 bash run_chair_ot_topk_visual_sweep.sh
 ```
 
-The three completed 64-token anchors (`8/64`, `16/64`, and `32/64`) are reused,
-so the refinement runs 24 new configurations, balanced as four jobs per GPU
-on `0 1 2 3 4 5`. Any other complete 500-caption result is also skipped before
+Legacy two-dustbin results are not reused because the new filename contains
+`otbary_vdust_tlogit`; the default refinement therefore runs all 27
+configurations. Complete results from this new method are still skipped before
 GPU assignment. CHAIR metrics and logs are written under
-`exp_results/chair_ot_topk_visual_refine_sweep/`, leaving the initial sweep
-summary unchanged. Override the grid with, for example,
+`exp_results/chair_ot_topk_visual_vdust_tlogit_refine_sweep/`. Override the grid
+with, for example,
 `TOPKS="12 16 20" VISUAL_TOKENS="49 64" GPU_IDS="0 1"`.
 
 Test larger visual grids with `topk={8,16,32,64}` and
@@ -117,7 +120,7 @@ bash run_chair_ot_large_visual_sweep.sh
 This launches 16 configurations using the same pending-only scheduler.
 Completed results are reused on rerun. Logs, the manifest, and the automatic
 CHAIR CSV/Markdown summaries are isolated under
-`exp_results/chair_ot_large_visual_sweep/`.
+`exp_results/chair_ot_large_visual_vdust_tlogit_sweep/`.
 
 Override OT parameters through environment variables:
 

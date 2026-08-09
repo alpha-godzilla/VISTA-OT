@@ -16,13 +16,14 @@ LOGITS_LAYERS="${LOGITS_LAYERS:-25,30}"
 VSV_LAMBDA="${VSV_LAMBDA:-0.17}"
 GAMMA="${GAMMA:-0.3}"
 
-# Best F1 configuration in the completed top-k / visual-token sweep.
+# Best-F1 point from the previous sweep, retained for a controlled ablation of
+# the new visual-dustbin/text-logit marginal design.
 OT_TOPK="${OT_TOPK:-32}"
 OT_VISUAL_TOKENS="${OT_VISUAL_TOKENS:-81}"
 OT_SINKHORN_ITERS="${OT_SINKHORN_ITERS:-3}"
 OT_EPSILON="${OT_EPSILON:-0.05}"
 
-COMPARE_DIR="${COMPARE_DIR:-$SCRIPT_DIR/exp_results/chair_vista_ot_seed_compare}"
+COMPARE_DIR="${COMPARE_DIR:-$SCRIPT_DIR/exp_results/chair_vista_ot_seed_compare_vdust_tlogit}"
 VISTA_EXP_FOLDER="${VISTA_EXP_FOLDER:-chair_vista_ot_seed_compare_vista}"
 OT_EXP_FOLDER="${OT_EXP_FOLDER:-chair_vista_ot_seed_compare_ot}"
 
@@ -79,7 +80,7 @@ vista_result_path() {
 
 ot_result_path() {
   local seed="$1"
-  printf '%s/exp_results/%s/%s/%s_otbary_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
+  printf '%s/exp_results/%s/%s/%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
     "$SCRIPT_DIR" "$OT_EXP_FOLDER" "$MODEL" "$(base_stem "$seed")" \
     "$OT_TOPK" "$OT_VISUAL_TOKENS" "$OT_SINKHORN_ITERS" "$OT_EPSILON" "$MAX_NEW_TOKENS"
 }

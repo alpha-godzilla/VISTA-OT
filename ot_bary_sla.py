@@ -268,7 +268,9 @@ class OTBarySLA:
         if not self.log_stats:
             return
 
-        local_plan = transport_plan[..., :-1, :-1]
+        # Only the visual side has a dustbin. All text columns are real
+        # top-k candidates and therefore remain in the local transport mass.
+        local_plan = transport_plan[..., :-1, :]
         entropy = -(
             layer_weights.float()
             * layer_weights.float().clamp_min(torch.finfo(torch.float32).tiny).log()
@@ -278,10 +280,7 @@ class OTBarySLA:
             "layer_weights": layer_weights.float().mean(dim=0),
             "layer_weight_entropy": entropy.mean(),
             "local_transport_mass": local_plan.sum(dim=(-2, -1)).mean(),
-            "dustbin_to_token_mass": transport_plan[..., -1, :-1]
-            .sum(dim=-1)
-            .mean(),
-            "token_to_dustbin_mass": transport_plan[..., :-1, -1]
+            "dustbin_to_token_mass": transport_plan[..., -1, :]
             .sum(dim=-1)
             .mean(),
         }
@@ -358,29 +357,26 @@ class OTBarySLA:
                 input_embedding_weight,
             ).float()
             text_local = _normalize(candidate_features)
-            text_global = _normalize(text_local.mean(dim=-2, keepdim=True))
-            text_extended = torch.cat([text_local, text_global], dim=-2)
 
             similarity = torch.einsum(
                 "bkd,bwmd->bwkm",
                 visual,
-                text_extended,
+                text_local,
             )
             cost = 1.0 - similarity
             visual_nodes = visual.shape[-2]
-            text_nodes = text_extended.shape[-2]
             source_marginal = torch.full(
                 (1, 1, visual_nodes),
                 1.0 / visual_nodes,
                 dtype=torch.float32,
                 device=cost.device,
             )
-            target_marginal = torch.full(
-                (1, 1, text_nodes),
-                1.0 / text_nodes,
-                dtype=torch.float32,
-                device=cost.device,
+            candidate_logits = torch.gather(
+                early_logits.float(),
+                dim=-1,
+                index=candidate_ids,
             )
+            target_marginal = F.softmax(candidate_logits, dim=-1)
             transport_plan = log_sinkhorn(
                 cost,
                 source_marginal,
@@ -389,8 +385,8 @@ class OTBarySLA:
                 num_iters=self.sinkhorn_iters,
             )
 
-            local_plan = transport_plan[..., :-1, :-1]
-            local_similarity = similarity[..., :-1, :-1]
+            local_plan = transport_plan[..., :-1, :]
+            local_similarity = similarity[..., :-1, :]
             layer_scores = (local_plan * local_similarity).sum(dim=(-2, -1))
             if self.force_uniform:
                 layer_weights_fp32 = torch.full_like(
@@ -412,6 +408,8 @@ class OTBarySLA:
             "candidate_ids": candidate_ids,
             "similarity": similarity,
             "transport_plan": transport_plan,
+            "source_marginal": source_marginal,
+            "target_marginal": target_marginal,
             "layer_scores": layer_scores,
         }
         return layer_weights, details

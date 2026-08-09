@@ -44,7 +44,7 @@ class OTBaryCLICompatibilityTests(unittest.TestCase):
 
         actual = "_".join(myutils.prepare_common_fileparts(args))
 
-        self.assertIn("otbary_m8_k36_it3_eps0.05", actual)
+        self.assertIn("otbary_vdust_tlogit_m8_k36_it3_eps0.05", actual)
 
     def test_ot_rejects_non_llava_model(self):
         args = common_args()
