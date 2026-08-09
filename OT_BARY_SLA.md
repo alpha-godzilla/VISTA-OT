@@ -122,6 +122,32 @@ Completed results are reused on rerun. Logs, the manifest, and the automatic
 CHAIR CSV/Markdown summaries are isolated under
 `exp_results/chair_ot_large_visual_vdust_tlogit_sweep/`.
 
+Run the default paired multi-seed grid for the visual-dustbin/text-logit
+method with `seeds={1994,2024,3407,42,1234}`, `topk={4,16,32}`, and
+`visual_tokens={16,64,81}`:
+
+```bash
+GPU_IDS="0 1 2 3 4 5" bash run_chair_ot_multiseed_grid.sh
+```
+
+This evaluates 45 OT runs and reuses complete VISTA baselines when available.
+For every seed, the baseline and all nine OT configurations share the same
+ordered 500-image manifest. The summarizer verifies the image IDs before
+reporting paired deltas. Outputs are written to:
+
+```text
+exp_results/chair_ot_multiseed_grid_vdust_tlogit/per_seed.csv
+exp_results/chair_ot_multiseed_grid_vdust_tlogit/aggregate.csv
+exp_results/chair_ot_multiseed_grid_vdust_tlogit/summary.md
+```
+
+Override the grid without editing the script, for example:
+
+```bash
+SEEDS="1994 2024" TOPKS="8 16" VISUAL_TOKENS="36 64" \
+GPU_IDS="0 1 2 3" bash run_chair_ot_multiseed_grid.sh
+```
+
 Override OT parameters through environment variables:
 
 ```bash
