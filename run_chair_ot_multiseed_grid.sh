@@ -221,7 +221,9 @@ run_job() {
 }
 
 run_gpu_worker() {
-  local worker_index="$1" gpu="${GPUS[$worker_index]}" index
+  local worker_index="$1"
+  local gpu="${GPUS[$worker_index]}"
+  local index
   for ((index=worker_index; index<${#JOB_METHODS[@]}; index+=${#GPUS[@]})); do
     run_job "$index" "$gpu"
   done
