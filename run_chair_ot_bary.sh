@@ -72,6 +72,7 @@ case "$MODE" in
       --ot-visual-tokens "${OT_VISUAL_TOKENS:-36}"
       --ot-sinkhorn-iters "${OT_SINKHORN_ITERS:-3}"
       --ot-epsilon "${OT_EPSILON:-0.05}"
+      --ot-layer-temperature "${OT_LAYER_TEMPERATURE:-0.1}"
     )
     if [[ "${OT_LOG_STATS:-1}" == "1" ]]; then
       method_args+=(--ot-log-stats)
@@ -85,6 +86,7 @@ case "$MODE" in
       --ot-visual-tokens "${OT_VISUAL_TOKENS:-36}"
       --ot-sinkhorn-iters "${OT_SINKHORN_ITERS:-3}"
       --ot-epsilon "${OT_EPSILON:-0.05}"
+      --ot-layer-temperature "${OT_LAYER_TEMPERATURE:-0.1}"
     )
     ;;
   *)

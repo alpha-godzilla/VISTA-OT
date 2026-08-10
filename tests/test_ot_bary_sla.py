@@ -182,7 +182,7 @@ class OTBarySLATests(unittest.TestCase):
             torch.full((1, 1, 10), 0.1),
         )
 
-    def test_layer_score_excludes_only_visual_dustbin_row(self):
+    def test_layer_cost_is_mean_local_transport_cost(self):
         method = OTBarySLA(topk=4, visual_tokens=9)
         method.cache_visual_features(self.visual)
         _, details = method.compute_layer_weights(
@@ -192,9 +192,33 @@ class OTBarySLATests(unittest.TestCase):
         )
         expected = (
             details["transport_plan"][..., :-1, :]
-            * details["similarity"][..., :-1, :]
-        ).sum(dim=(-2, -1))
-        torch.testing.assert_close(details["layer_scores"], expected)
+            * (1.0 - details["similarity"][..., :-1, :])
+        ).sum(dim=(-2, -1)) / details["local_transport_mass"]
+        torch.testing.assert_close(details["layer_costs"], expected)
+        torch.testing.assert_close(details["layer_scores"], -expected)
+
+    def test_temperature_controls_inverse_cost_weight_sharpness(self):
+        aligned = OTBarySLA(
+            topk=2, visual_tokens=4, epsilon=0.05, sinkhorn_iters=20,
+            layer_temperature=0.05,
+        )
+        smooth = OTBarySLA(
+            topk=2, visual_tokens=4, epsilon=0.05, sinkhorn_iters=20,
+            layer_temperature=1.0,
+        )
+        embedding = torch.eye(4).repeat(3, 1)
+        visual = torch.zeros(1, 4, 4)
+        visual[..., 0] = 1.0
+        logits = torch.full((1, 2, 12), -20.0)
+        logits[0, 0, 2:4] = 10.0
+        logits[0, 1, 0:2] = 10.0
+        for method in (aligned, smooth):
+            method.cache_visual_features(visual)
+        sharp_weights, sharp_details = aligned.compute_layer_weights(logits, embedding, True)
+        smooth_weights = smooth.compute_layer_weights(logits, embedding)
+        self.assertEqual(sharp_details["layer_costs"].argmin(dim=-1).item(), 1)
+        self.assertEqual(sharp_weights.argmax(dim=-1).item(), 1)
+        self.assertGreater(sharp_weights[0, 1], smooth_weights[0, 1])
 
     def test_mixed_precision_inputs_are_finite(self):
         for dtype in (torch.float16, torch.bfloat16):

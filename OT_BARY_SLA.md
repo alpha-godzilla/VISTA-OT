@@ -23,10 +23,14 @@ iterations, and only the non-dustbin visual rows contribute to the layer score.
 New result filenames include `otbary_vdust_tlogit` so they cannot be confused
 with results produced by the previous two-dustbin, uniform-marginal method.
 
-The scores become a distribution over early layers:
+The normalized local OT costs become a distribution over early layers.  The
+global visual node is excluded from the cost average, so layers are compared
+by local visual-text matching quality rather than how much mass reaches that
+node:
 
 ```text
-layer_weights = softmax(layer_scores)
+layer_cost[l] = sum(P_local[l] * cost_local[l]) / sum(P_local[l])
+layer_weights = softmax(-layer_cost / ot_layer_temperature)
 augmented_logits = sum(layer_weights * early_logits)
 final_logits = (1 - gamma) * final_logits + gamma * augmented_logits
 ```
@@ -42,6 +46,7 @@ ot_topk              = 8
 ot_visual_tokens     = 36
 ot_sinkhorn_iters    = 3
 ot_epsilon           = 0.05
+ot_layer_temperature = 0.1
 logits_alpha (gamma) = 0.3
 logits_layers        = 25,30
 ```

@@ -22,6 +22,7 @@ OT_TOPK="${OT_TOPK:-32}"
 OT_VISUAL_TOKENS="${OT_VISUAL_TOKENS:-81}"
 OT_SINKHORN_ITERS="${OT_SINKHORN_ITERS:-3}"
 OT_EPSILON="${OT_EPSILON:-0.05}"
+OT_LAYER_TEMPERATURE="${OT_LAYER_TEMPERATURE:-0.1}"
 
 COMPARE_DIR="${COMPARE_DIR:-$SCRIPT_DIR/exp_results/chair_vista_ot_seed_compare_vdust_tlogit}"
 VISTA_EXP_FOLDER="${VISTA_EXP_FOLDER:-chair_vista_ot_seed_compare_vista}"
@@ -80,9 +81,9 @@ vista_result_path() {
 
 ot_result_path() {
   local seed="$1"
-  printf '%s/exp_results/%s/%s/%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
+  printf '%s/exp_results/%s/%s/%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_ltemp%s_greedy_max_new_tokens_%s.jsonl' \
     "$SCRIPT_DIR" "$OT_EXP_FOLDER" "$MODEL" "$(base_stem "$seed")" \
-    "$OT_TOPK" "$OT_VISUAL_TOKENS" "$OT_SINKHORN_ITERS" "$OT_EPSILON" "$MAX_NEW_TOKENS"
+    "$OT_TOPK" "$OT_VISUAL_TOKENS" "$OT_SINKHORN_ITERS" "$OT_EPSILON" "$OT_LAYER_TEMPERATURE" "$MAX_NEW_TOKENS"
 }
 
 is_complete_result() {
@@ -130,6 +131,7 @@ run_one() {
       --ot-visual-tokens "$OT_VISUAL_TOKENS"
       --ot-sinkhorn-iters "$OT_SINKHORN_ITERS"
       --ot-epsilon "$OT_EPSILON"
+      --ot-layer-temperature "$OT_LAYER_TEMPERATURE"
       --ot-log-stats
     )
   fi
@@ -180,7 +182,7 @@ run_seed_worker() {
 
 echo "Seeds: ${SEEDS[*]}"
 echo "VISTA: lambda=$VSV_LAMBDA, gamma=$GAMMA, layers=$LOGITS_LAYERS"
-echo "VISTA-OT: topk=$OT_TOPK, visual_tokens=$OT_VISUAL_TOKENS, iters=$OT_SINKHORN_ITERS, epsilon=$OT_EPSILON"
+echo "VISTA-OT: topk=$OT_TOPK, visual_tokens=$OT_VISUAL_TOKENS, iters=$OT_SINKHORN_ITERS, epsilon=$OT_EPSILON, layer_temperature=$OT_LAYER_TEMPERATURE"
 echo "Each VISTA/OT pair shares the same seed-specific val2014 image IDs."
 
 declare -a WORKER_PIDS=()

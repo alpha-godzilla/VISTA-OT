@@ -21,6 +21,7 @@ GAMMA="${GAMMA:-0.3}"
 VSV_LAMBDA="${VSV_LAMBDA:-0.17}"
 OT_SINKHORN_ITERS="${OT_SINKHORN_ITERS:-3}"
 OT_EPSILON="${OT_EPSILON:-0.05}"
+OT_LAYER_TEMPERATURE="${OT_LAYER_TEMPERATURE:-0.1}"
 
 export VISTA_COCO_ROOT="${VISTA_COCO_ROOT:-/data/sun_yuxi/datasets/coco}"
 export NLTK_DATA="${NLTK_DATA:-/data/sun_yuxi/nltk_data}"
@@ -103,7 +104,7 @@ mkdir -p "$RESULT_DIR" "$LOG_DIR" "$NLTK_DATA"
 result_path() {
   local topk="$1"
   local visual_tokens="$2"
-  printf '%s/seed%s_vsv_lambda_%s_logaug_loglayer_%s_logalpha_%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
+  printf '%s/seed%s_vsv_lambda_%s_logaug_loglayer_%s_logalpha_%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_ltemp%s_greedy_max_new_tokens_%s.jsonl' \
     "$RESULT_DIR" \
     "$SEED" \
     "$VSV_LAMBDA" \
@@ -112,7 +113,7 @@ result_path() {
     "$topk" \
     "$visual_tokens" \
     "$OT_SINKHORN_ITERS" \
-    "$OT_EPSILON" \
+    "$OT_EPSILON" "$OT_LAYER_TEMPERATURE" \
     "$MAX_NEW_TOKENS"
 }
 
@@ -197,6 +198,7 @@ run_gpu_worker() {
       --ot-visual-tokens "$visual_tokens" \
       --ot-sinkhorn-iters "$OT_SINKHORN_ITERS" \
       --ot-epsilon "$OT_EPSILON" \
+      --ot-layer-temperature "$OT_LAYER_TEMPERATURE" \
       --ot-log-stats \
       --max-new-tokens "$MAX_NEW_TOKENS" \
       > "$log" 2>&1; then

@@ -19,6 +19,7 @@ OT_TOPK="${OT_TOPK:-16}"
 OT_VISUAL_TOKENS="${OT_VISUAL_TOKENS:-64}"
 OT_SINKHORN_ITERS="${OT_SINKHORN_ITERS:-3}"
 OT_EPSILON="${OT_EPSILON:-0.05}"
+OT_LAYER_TEMPERATURE="${OT_LAYER_TEMPERATURE:-0.1}"
 
 SWEEP_DIR="${SWEEP_DIR:-$SCRIPT_DIR/exp_results/chair_ot_gamma_paired_sweep}"
 VISTA_EXP_FOLDER="${VISTA_EXP_FOLDER:-chair_ot_gamma_paired_sweep_vista}"
@@ -75,9 +76,9 @@ vista_result_path() {
 
 ot_result_path() {
   local seed="$1" gamma="$2"
-  printf '%s/exp_results/%s/%s/%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
+  printf '%s/exp_results/%s/%s/%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_ltemp%s_greedy_max_new_tokens_%s.jsonl' \
     "$SCRIPT_DIR" "$OT_EXP_FOLDER" "$MODEL" "$(base_stem "$seed" "$gamma")" \
-    "$OT_TOPK" "$OT_VISUAL_TOKENS" "$OT_SINKHORN_ITERS" "$OT_EPSILON" "$MAX_NEW_TOKENS"
+    "$OT_TOPK" "$OT_VISUAL_TOKENS" "$OT_SINKHORN_ITERS" "$OT_EPSILON" "$OT_LAYER_TEMPERATURE" "$MAX_NEW_TOKENS"
 }
 
 is_complete_result() {
@@ -119,7 +120,7 @@ run_job() {
   local -a method_args=(--vsv --vsv-lambda "$VSV_LAMBDA" --logits-aug --logits-layers "$LOGITS_LAYERS" --logits-alpha "$gamma")
   if [[ "$method" == ot ]]; then
     exp_folder="$OT_EXP_FOLDER"
-    method_args+=(--use-ot-bary-sla --ot-topk "$OT_TOPK" --ot-visual-tokens "$OT_VISUAL_TOKENS" --ot-sinkhorn-iters "$OT_SINKHORN_ITERS" --ot-epsilon "$OT_EPSILON" --ot-log-stats)
+    method_args+=(--use-ot-bary-sla --ot-topk "$OT_TOPK" --ot-visual-tokens "$OT_VISUAL_TOKENS" --ot-sinkhorn-iters "$OT_SINKHORN_ITERS" --ot-epsilon "$OT_EPSILON" --ot-layer-temperature "$OT_LAYER_TEMPERATURE" --ot-log-stats)
   fi
   if [[ -f "$result" ]]; then backup="${result}.partial.$(date +%Y%m%d_%H%M%S)"; mv "$result" "$backup"; fi
   stats_file="${result%.jsonl}_ot_stats.jsonl"
@@ -137,7 +138,7 @@ run_gpu_worker() {
 }
 
 echo "Seeds: ${SEEDS[*]}; gammas: ${GAMMAS[*]}; GPUs: ${GPUS[*]}"
-echo "OT: topk=$OT_TOPK visual_tokens=$OT_VISUAL_TOKENS iters=$OT_SINKHORN_ITERS epsilon=$OT_EPSILON"
+echo "OT: topk=$OT_TOPK visual_tokens=$OT_VISUAL_TOKENS iters=$OT_SINKHORN_ITERS epsilon=$OT_EPSILON layer_temperature=$OT_LAYER_TEMPERATURE"
 echo "Pending generation jobs: ${#JOB_METHODS[@]}"
 declare -a WORKER_PIDS=()
 for ((worker=0; worker<${#GPUS[@]} && worker<${#JOB_METHODS[@]}; worker+=1)); do run_gpu_worker "$worker" & WORKER_PIDS+=("$!"); done

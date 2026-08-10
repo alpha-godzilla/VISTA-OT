@@ -132,6 +132,7 @@ class OTBarySLA:
         visual_tokens: int = 36,
         epsilon: float = 0.05,
         sinkhorn_iters: int = 3,
+        layer_temperature: float = 0.1,
         special_token_ids: Optional[Iterable[int]] = None,
         log_stats: bool = False,
         force_uniform: bool = False,
@@ -148,11 +149,17 @@ class OTBarySLA:
             raise ValueError(
                 f"sinkhorn_iters must be positive; got {sinkhorn_iters}"
             )
+        if layer_temperature <= 0:
+            raise ValueError(
+                "layer_temperature must be positive; got "
+                f"{layer_temperature}"
+            )
 
         self.topk = topk
         self.visual_tokens = visual_tokens
         self.epsilon = epsilon
         self.sinkhorn_iters = sinkhorn_iters
+        self.layer_temperature = layer_temperature
         self.special_token_ids = tuple(
             sorted({int(token_id) for token_id in (special_token_ids or [])})
         )
@@ -261,7 +268,7 @@ class OTBarySLA:
 
     def _update_stats(
         self,
-        layer_scores: torch.Tensor,
+        layer_costs: torch.Tensor,
         layer_weights: torch.Tensor,
         transport_plan: torch.Tensor,
     ) -> None:
@@ -276,7 +283,7 @@ class OTBarySLA:
             * layer_weights.float().clamp_min(torch.finfo(torch.float32).tiny).log()
         ).sum(dim=-1)
         values = {
-            "layer_scores": layer_scores.float().mean(dim=0),
+            "layer_costs": layer_costs.float().mean(dim=0),
             "layer_weights": layer_weights.float().mean(dim=0),
             "layer_weight_entropy": entropy.mean(),
             "local_transport_mass": local_plan.sum(dim=(-2, -1)).mean(),
@@ -387,19 +394,27 @@ class OTBarySLA:
 
             local_plan = transport_plan[..., :-1, :]
             local_similarity = similarity[..., :-1, :]
-            layer_scores = (local_plan * local_similarity).sum(dim=(-2, -1))
+            # Compare layers by their mean local transport cost.  Dividing by
+            # local mass removes variation caused by the global visual
+            # dustbin, so lower OT cost always produces a higher layer score.
+            local_cost = cost[..., :-1, :]
+            local_mass = local_plan.sum(dim=(-2, -1))
+            layer_costs = (local_plan * local_cost).sum(dim=(-2, -1))
+            layer_costs = layer_costs / local_mass.clamp_min(
+                torch.finfo(torch.float32).tiny
+            )
             if self.force_uniform:
                 layer_weights_fp32 = torch.full_like(
-                    layer_scores,
+                    layer_costs,
                     1.0 / layer_count,
                 )
             else:
                 layer_weights_fp32 = torch.softmax(
-                    layer_scores,
+                    -layer_costs / self.layer_temperature,
                     dim=-1,
                 )
 
-        self._update_stats(layer_scores, layer_weights_fp32, transport_plan)
+        self._update_stats(layer_costs, layer_weights_fp32, transport_plan)
         layer_weights = layer_weights_fp32.to(dtype=early_logits.dtype)
         if not return_details:
             return layer_weights
@@ -410,7 +425,11 @@ class OTBarySLA:
             "transport_plan": transport_plan,
             "source_marginal": source_marginal,
             "target_marginal": target_marginal,
-            "layer_scores": layer_scores,
+            "layer_costs": layer_costs,
+            # Kept as a compatibility alias for consumers of older diagnostic
+            # details; it now denotes negative mean OT cost.
+            "layer_scores": -layer_costs,
+            "local_transport_mass": local_mass,
         }
         return layer_weights, details
 

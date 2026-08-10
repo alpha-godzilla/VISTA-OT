@@ -46,6 +46,12 @@ def add_ot_bary_sla_arguments(parser):
     group.add_argument("--ot-sinkhorn-iters", type=int, default=3)
     group.add_argument("--ot-epsilon", type=float, default=0.05)
     group.add_argument(
+        "--ot-layer-temperature",
+        type=float,
+        default=0.1,
+        help="Softmax temperature for inverse-OT-cost early-layer weights.",
+    )
+    group.add_argument(
         "--ot-log-stats",
         action="store_true",
         help="Save generation-level OT diagnostics without per-token printing.",
@@ -69,6 +75,8 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError("--use-ot-bary-sla requires --logits-aug")
     if not 0.0 <= args.logits_alpha <= 1.0:
         raise ValueError("--logits-alpha must be in [0, 1]")
+    if args.ot_layer_temperature <= 0:
+        raise ValueError("--ot-layer-temperature must be positive")
     try:
         start_layer, end_layer = map(int, args.logits_layers.split(","))
     except ValueError as exc:
@@ -109,6 +117,7 @@ def prepare_common_fileparts(args):
                     f"k{args.ot_visual_tokens}",
                     f"it{args.ot_sinkhorn_iters}",
                     f"eps{args.ot_epsilon}",
+                    f"ltemp{args.ot_layer_temperature}",
                 ]
             )
             if args.ot_force_uniform:

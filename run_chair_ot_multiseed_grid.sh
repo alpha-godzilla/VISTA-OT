@@ -17,6 +17,7 @@ VSV_LAMBDA="${VSV_LAMBDA:-0.17}"
 GAMMA="${GAMMA:-0.3}"
 OT_SINKHORN_ITERS="${OT_SINKHORN_ITERS:-3}"
 OT_EPSILON="${OT_EPSILON:-0.05}"
+OT_LAYER_TEMPERATURE="${OT_LAYER_TEMPERATURE:-0.1}"
 
 GRID_DIR="${GRID_DIR:-$SCRIPT_DIR/exp_results/chair_ot_multiseed_grid_vdust_tlogit}"
 VISTA_EXP_FOLDER="${VISTA_EXP_FOLDER:-chair_vista_ot_seed_compare_vista}"
@@ -75,9 +76,9 @@ vista_result_path() {
 
 ot_result_path() {
   local seed="$1" topk="$2" visual_tokens="$3"
-  printf '%s/exp_results/%s/%s/%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_greedy_max_new_tokens_%s.jsonl' \
+  printf '%s/exp_results/%s/%s/%s_otbary_vdust_tlogit_m%s_k%s_it%s_eps%s_ltemp%s_greedy_max_new_tokens_%s.jsonl' \
     "$SCRIPT_DIR" "$OT_EXP_FOLDER" "$MODEL" "$(base_stem "$seed")" \
-    "$topk" "$visual_tokens" "$OT_SINKHORN_ITERS" "$OT_EPSILON" "$MAX_NEW_TOKENS"
+    "$topk" "$visual_tokens" "$OT_SINKHORN_ITERS" "$OT_EPSILON" "$OT_LAYER_TEMPERATURE" "$MAX_NEW_TOKENS"
 }
 
 is_complete_result() {
@@ -188,6 +189,7 @@ run_job() {
       --ot-visual-tokens "$visual_tokens"
       --ot-sinkhorn-iters "$OT_SINKHORN_ITERS"
       --ot-epsilon "$OT_EPSILON"
+      --ot-layer-temperature "$OT_LAYER_TEMPERATURE"
       --ot-log-stats
     )
   fi
@@ -231,7 +233,7 @@ run_gpu_worker() {
 
 echo "Seeds: ${SEEDS[*]}"
 echo "Grid: topk={${TOPKS[*]}} visual_tokens={${VISUAL_TOKENS[*]}}"
-echo "Fixed lambda=$VSV_LAMBDA gamma=$GAMMA iters=$OT_SINKHORN_ITERS epsilon=$OT_EPSILON"
+echo "Fixed lambda=$VSV_LAMBDA gamma=$GAMMA iters=$OT_SINKHORN_ITERS epsilon=$OT_EPSILON layer_temperature=$OT_LAYER_TEMPERATURE"
 echo "Pending generation jobs: ${#JOB_METHODS[@]}"
 
 declare -a WORKER_PIDS=()
