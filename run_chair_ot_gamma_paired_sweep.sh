@@ -107,8 +107,14 @@ for seed in "${SEEDS[@]}"; do
 done
 
 run_job() {
-  local index="$1" gpu="$2" method="${JOB_METHODS[$index]}" seed="${JOB_SEEDS[$index]}" gamma="${JOB_GAMMAS[$index]}"
-  local ids_file="${JOB_IDS_FILES[$index]}" result="${JOB_RESULTS[$index]}" exp_folder="$VISTA_EXP_FOLDER"
+  local index="$1"
+  local gpu="$2"
+  local method="${JOB_METHODS[$index]}"
+  local seed="${JOB_SEEDS[$index]}"
+  local gamma="${JOB_GAMMAS[$index]}"
+  local ids_file="${JOB_IDS_FILES[$index]}"
+  local result="${JOB_RESULTS[$index]}"
+  local exp_folder="$VISTA_EXP_FOLDER"
   local log_file="$SWEEP_DIR/logs/${method}_seed${seed}_gamma${gamma}.log" backup stats_file
   local -a method_args=(--vsv --vsv-lambda "$VSV_LAMBDA" --logits-aug --logits-layers "$LOGITS_LAYERS" --logits-alpha "$gamma")
   if [[ "$method" == ot ]]; then
@@ -124,7 +130,9 @@ run_job() {
 }
 
 run_gpu_worker() {
-  local worker_index="$1" gpu="${GPUS[$worker_index]}" index
+  local worker_index="$1"
+  local gpu="${GPUS[$worker_index]}"
+  local index
   for ((index=worker_index; index<${#JOB_METHODS[@]}; index+=${#GPUS[@]})); do run_job "$index" "$gpu"; done
 }
 
