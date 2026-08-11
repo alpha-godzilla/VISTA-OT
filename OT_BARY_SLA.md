@@ -91,6 +91,22 @@ PYTHON_BIN=/home/ljc/miniconda3/envs/formodelling-gpu/bin/python \
 bash run_chair_ot_attention_seed2024.sh
 ```
 
+For an eight-GPU paired search, use the attention-OT-specific grid runner. It
+runs one VISTA baseline per `(seed, gamma)` pair, then searches 16 attention
+configurations by default: `gamma={0.3,0.5}`, `layer_temperature={0.1,0.2}`,
+`attention_power={0.5,1.0}`, and `uniform_mix={0,0.02}`. All configurations
+use unpooled visual tokens, `topk=16`, `epsilon=0.05`, at most 50 Sinkhorn
+iterations, and tolerance `1e-3`.
+
+```bash
+GPU_IDS="0 1 2 3 4 5 6 7" \
+PYTHON_BIN=/home/ljc/miniconda3/envs/formodelling-gpu/bin/python \
+bash run_chair_ot_attention_grid.sh
+```
+
+The runner writes a paired `summary.csv`, layer-weight diagnostics, and a
+compact Markdown report under `exp_results/chair_ot_attention_grid/`.
+
 The repository's historical `25,30` setting is an inclusive six-layer range.
 The OT runner retains it so that original SLA and adaptive OT weighting differ
 only in their aggregation rule. The paper's five-layer setting can be selected
