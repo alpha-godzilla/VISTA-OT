@@ -162,7 +162,11 @@ run_job() {
 }
 
 run_worker() {
-  local worker_index="$1" gpu="${GPUS[$worker_index]}" index
+  # Split declarations for compatibility with Bash versions that expand all
+  # `local` initializers before assigning the preceding variables under -u.
+  local worker_index="$1"
+  local gpu="${GPUS[$worker_index]}"
+  local index
   for ((index=worker_index; index<${#JOB_METHODS[@]}; index+=${#GPUS[@]})); do
     run_job "$index" "$gpu"
   done
