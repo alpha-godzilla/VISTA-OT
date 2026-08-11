@@ -92,11 +92,12 @@ bash run_chair_ot_attention_seed2024.sh
 ```
 
 For an eight-GPU paired search, use the attention-OT-specific grid runner. It
-runs one VISTA baseline per `(seed, gamma)` pair, then searches 16 attention
-configurations by default: `gamma={0.3,0.5}`, `layer_temperature={0.1,0.2}`,
-`attention_power={0.5,1.0}`, and `uniform_mix={0,0.02}`. All configurations
-use unpooled visual tokens, `topk=16`, `epsilon=0.05`, at most 50 Sinkhorn
-iterations, and tolerance `1e-3`.
+runs one VISTA baseline per `(seed, gamma)` pair, then searches 30 attention
+configurations by default with fixed `gamma=0.3` and `uniform_mix=0.02`:
+`layer_temperature={0.03,0.06,0.1,0.2,0.4,0.8}` and
+`attention_power={0.25,0.5,0.75,1.0,1.5}`. All configurations use unpooled
+visual tokens, `topk=16`, `epsilon=0.05`, at most 50 Sinkhorn iterations, and
+tolerance `1e-3`.
 
 ```bash
 GPU_IDS="0 1 2 3 4 5 6 7" \
