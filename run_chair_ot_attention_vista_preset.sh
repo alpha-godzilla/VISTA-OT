@@ -21,4 +21,4 @@ export OT_EPSILON="${OT_EPSILON:-0.05}"
 export OT_SINKHORN_ITERS="${OT_SINKHORN_ITERS:-50}"
 export OT_SINKHORN_TOLERANCE="${OT_SINKHORN_TOLERANCE:-0.001}"
 
-exec "$SCRIPT_DIR/run_chair_ot_attention_grid.sh"
+exec bash "$SCRIPT_DIR/run_chair_ot_attention_grid.sh"
