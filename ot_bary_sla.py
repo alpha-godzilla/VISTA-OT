@@ -677,7 +677,7 @@ class OTBarySLA:
         early_logits: torch.Tensor,
         final_logits: torch.Tensor,
         input_embedding_weight: torch.Tensor,
-        gamma: float,
+        logits_alpha: float,
         attentions: Optional[Sequence[torch.Tensor]] = None,
         attention_layer_indices: Optional[Sequence[int]] = None,
         output_embedding_weight: Optional[torch.Tensor] = None,
@@ -692,8 +692,11 @@ class OTBarySLA:
             raise ValueError("early and final logits batch sizes differ")
         if early_logits.shape[-1] != final_logits.shape[-1]:
             raise ValueError("early and final logits vocabulary sizes differ")
-        if not 0.0 <= gamma <= 1.0:
-            raise ValueError(f"gamma must be in [0, 1]; got {gamma}")
+        if not 0.0 <= logits_alpha <= 1.0:
+            raise ValueError(
+                "logits_alpha must be in [0, 1]; "
+                f"got {logits_alpha}"
+            )
 
         layer_weights, details = self.compute_layer_weights(
             early_logits,
@@ -706,7 +709,10 @@ class OTBarySLA:
         augmented = (
             early_logits * layer_weights.unsqueeze(-1)
         ).sum(dim=1)
-        mixed = (1.0 - gamma) * final_logits + gamma * augmented
+        mixed = (
+            (1.0 - logits_alpha) * final_logits
+            + logits_alpha * augmented
+        )
         details["layer_weights"] = layer_weights
         details["augmented_logits"] = augmented
         return mixed, details

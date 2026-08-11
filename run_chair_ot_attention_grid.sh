@@ -7,7 +7,7 @@ cd "$SCRIPT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 read -r -a SEEDS <<< "${SEEDS:-2024}"
-read -r -a GAMMAS <<< "${GAMMAS:-0.3}"
+read -r -a LOGITS_ALPHAS <<< "${LOGITS_ALPHA:-0.3}"
 read -r -a LAYER_TEMPERATURES <<< "${LAYER_TEMPERATURES:-0.03 0.06 0.1 0.2 0.4 0.8}"
 read -r -a ATTENTION_POWERS <<< "${ATTENTION_POWERS:-0.25 0.5 0.75 1.0 1.5}"
 read -r -a UNIFORM_MIXES <<< "${UNIFORM_MIXES:-0.02}"
@@ -50,7 +50,7 @@ if [[ ! -d "$VISTA_COCO_ROOT/val2014" && -d /home/ljc/code/data/val2014 ]]; then
   export VISTA_COCO_ROOT=/home/ljc/code/data
 fi
 
-if (( ${#SEEDS[@]} == 0 || ${#GAMMAS[@]} == 0 || ${#LAYER_TEMPERATURES[@]} == 0 || ${#ATTENTION_POWERS[@]} == 0 || ${#UNIFORM_MIXES[@]} == 0 || ${#GPUS[@]} == 0 )); then
+if (( ${#SEEDS[@]} == 0 || ${#LOGITS_ALPHAS[@]} == 0 || ${#LAYER_TEMPERATURES[@]} == 0 || ${#ATTENTION_POWERS[@]} == 0 || ${#UNIFORM_MIXES[@]} == 0 || ${#GPUS[@]} == 0 )); then
   echo "All search arrays and GPU_IDS must be non-empty." >&2
   exit 1
 fi
@@ -71,23 +71,23 @@ mkdir -p "$SWEEP_DIR/manifests" "$SWEEP_DIR/logs"
 MANIFEST="$SWEEP_DIR/manifest.tsv"
 
 base_stem() {
-  local seed="$1" gamma="$2"
+  local seed="$1" logits_alpha="$2"
   printf 'seed%s_vsv_lambda_%s_logaug_loglayer_%s_logalpha_%s' \
-    "$seed" "$VSV_LAMBDA" "$LOGITS_LAYERS" "$gamma"
+    "$seed" "$VSV_LAMBDA" "$LOGITS_LAYERS" "$logits_alpha"
 }
 
 vista_result_path() {
-  local seed="$1" gamma="$2"
+  local seed="$1" logits_alpha="$2"
   printf '%s/exp_results/%s/%s/%s_greedy_max_new_tokens_%s.jsonl' \
     "$SCRIPT_DIR" "$VISTA_EXP_FOLDER" "$MODEL" \
-    "$(base_stem "$seed" "$gamma")" "$MAX_NEW_TOKENS"
+    "$(base_stem "$seed" "$logits_alpha")" "$MAX_NEW_TOKENS"
 }
 
 ot_result_path() {
-  local seed="$1" gamma="$2" layer_temperature="$3" power="$4" mix="$5"
+  local seed="$1" logits_alpha="$2" layer_temperature="$3" power="$4" mix="$5"
   printf '%s/exp_results/%s/%s/%s_otattn_nodust_layerhid_lmhead_tlogit_m%s_kunpooled_it%s_tol%s_eps%s_ltemp%s_apow%s_amix%s_greedy_max_new_tokens_%s.jsonl' \
     "$SCRIPT_DIR" "$OT_EXP_FOLDER" "$MODEL" \
-    "$(base_stem "$seed" "$gamma")" "$OT_TOPK" "$OT_SINKHORN_ITERS" \
+    "$(base_stem "$seed" "$logits_alpha")" "$OT_TOPK" "$OT_SINKHORN_ITERS" \
     "$OT_SINKHORN_TOLERANCE" "$OT_EPSILON" "$layer_temperature" "$power" "$mix" "$MAX_NEW_TOKENS"
 }
 
@@ -95,23 +95,23 @@ is_complete_result() {
   [[ -f "$1" ]] && [[ "$(wc -l < "$1")" -eq "$SUBSET_SIZE" ]]
 }
 
-printf 'method\tseed\tgamma\tlayer_temperature\tattention_power\tuniform_mix\tgpu\tids_file\tresult_jsonl\tchair_json\tstats_jsonl\n' > "$MANIFEST"
-declare -a JOB_METHODS=() JOB_SEEDS=() JOB_GAMMAS=() JOB_LAYER_TEMPERATURES=() JOB_POWERS=() JOB_MIXES=() JOB_IDS_FILES=() JOB_RESULTS=()
+printf 'method\tseed\tlogits_alpha\tlayer_temperature\tattention_power\tuniform_mix\tgpu\tids_file\tresult_jsonl\tchair_json\tstats_jsonl\n' > "$MANIFEST"
+declare -a JOB_METHODS=() JOB_SEEDS=() JOB_LOGITS_ALPHAS=() JOB_LAYER_TEMPERATURES=() JOB_POWERS=() JOB_MIXES=() JOB_IDS_FILES=() JOB_RESULTS=()
 pending_count=0
 
 enqueue() {
-  local method="$1" seed="$2" gamma="$3" layer_temperature="$4" power="$5" mix="$6" ids_file="$7" result="$8" gpu
+  local method="$1" seed="$2" logits_alpha="$3" layer_temperature="$4" power="$5" mix="$6" ids_file="$7" result="$8" gpu
   if is_complete_result "$result"; then
     gpu=-1
   else
     gpu="${GPUS[$((pending_count % ${#GPUS[@]}))]}"
-    JOB_METHODS+=("$method"); JOB_SEEDS+=("$seed"); JOB_GAMMAS+=("$gamma")
+    JOB_METHODS+=("$method"); JOB_SEEDS+=("$seed"); JOB_LOGITS_ALPHAS+=("$logits_alpha")
     JOB_LAYER_TEMPERATURES+=("$layer_temperature"); JOB_POWERS+=("$power"); JOB_MIXES+=("$mix")
     JOB_IDS_FILES+=("$ids_file"); JOB_RESULTS+=("$result")
     ((pending_count += 1))
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$method" "$seed" "$gamma" "$layer_temperature" "$power" "$mix" "$gpu" "$ids_file" "$result" "${result%.jsonl}_chair.json" "${result%.jsonl}_ot_stats.jsonl" >> "$MANIFEST"
+    "$method" "$seed" "$logits_alpha" "$layer_temperature" "$power" "$mix" "$gpu" "$ids_file" "$result" "${result%.jsonl}_chair.json" "${result%.jsonl}_ot_stats.jsonl" >> "$MANIFEST"
 }
 
 for seed in "${SEEDS[@]}"; do
@@ -121,12 +121,12 @@ for seed in "${SEEDS[@]}"; do
       --data-path "$VISTA_COCO_ROOT/val2014" --seed "$seed" \
       --subset-size "$SUBSET_SIZE" --output "$ids_file"
   fi
-  for gamma in "${GAMMAS[@]}"; do
-    enqueue vista "$seed" "$gamma" baseline baseline baseline "$ids_file" "$(vista_result_path "$seed" "$gamma")"
+  for logits_alpha in "${LOGITS_ALPHAS[@]}"; do
+    enqueue vista "$seed" "$logits_alpha" baseline baseline baseline "$ids_file" "$(vista_result_path "$seed" "$logits_alpha")"
     for layer_temperature in "${LAYER_TEMPERATURES[@]}"; do
       for power in "${ATTENTION_POWERS[@]}"; do
         for mix in "${UNIFORM_MIXES[@]}"; do
-          enqueue ot "$seed" "$gamma" "$layer_temperature" "$power" "$mix" "$ids_file" "$(ot_result_path "$seed" "$gamma" "$layer_temperature" "$power" "$mix")"
+          enqueue ot "$seed" "$logits_alpha" "$layer_temperature" "$power" "$mix" "$ids_file" "$(ot_result_path "$seed" "$logits_alpha" "$layer_temperature" "$power" "$mix")"
         done
       done
     done
@@ -135,12 +135,12 @@ done
 
 run_job() {
   local index="$1" gpu="$2"
-  local method="${JOB_METHODS[$index]}" seed="${JOB_SEEDS[$index]}" gamma="${JOB_GAMMAS[$index]}"
+  local method="${JOB_METHODS[$index]}" seed="${JOB_SEEDS[$index]}" logits_alpha="${JOB_LOGITS_ALPHAS[$index]}"
   local layer_temperature="${JOB_LAYER_TEMPERATURES[$index]}" power="${JOB_POWERS[$index]}" mix="${JOB_MIXES[$index]}"
   local ids_file="${JOB_IDS_FILES[$index]}" result="${JOB_RESULTS[$index]}"
   local exp_folder="$VISTA_EXP_FOLDER" backup stats_file
-  local log_file="$SWEEP_DIR/logs/${method}_seed${seed}_g${gamma}_lt${layer_temperature}_p${power}_mix${mix}.log"
-  local -a method_args=(--vsv --vsv-lambda "$VSV_LAMBDA" --logits-aug --logits-layers "$LOGITS_LAYERS" --logits-alpha "$gamma")
+  local log_file="$SWEEP_DIR/logs/${method}_seed${seed}_alpha${logits_alpha}_lt${layer_temperature}_p${power}_mix${mix}.log"
+  local -a method_args=(--vsv --vsv-lambda "$VSV_LAMBDA" --logits-aug --logits-layers "$LOGITS_LAYERS" --logits-alpha "$logits_alpha")
   if [[ "$method" == ot ]]; then
     exp_folder="$OT_EXP_FOLDER"
     method_args+=(
@@ -153,7 +153,7 @@ run_job() {
   if [[ -f "$result" ]]; then backup="${result}.partial.$(date +%Y%m%d_%H%M%S)"; mv "$result" "$backup"; fi
   stats_file="${result%.jsonl}_ot_stats.jsonl"
   if [[ -f "$stats_file" ]]; then backup="${stats_file}.partial.$(date +%Y%m%d_%H%M%S)"; mv "$stats_file" "$backup"; fi
-  echo "[GPU $gpu] start method=$method seed=$seed gamma=$gamma ltemp=$layer_temperature power=$power mix=$mix"
+  echo "[GPU $gpu] start method=$method seed=$seed logits_alpha=$logits_alpha ltemp=$layer_temperature power=$power mix=$mix"
   CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON_BIN" chair_eval.py \
     --exp_folder "$exp_folder" --model "$MODEL" --data-path "$VISTA_COCO_ROOT/val2014" \
     --subset-size "$SUBSET_SIZE" --subset-ids-file "$ids_file" --seed "$seed" \
@@ -169,7 +169,7 @@ run_worker() {
 }
 
 echo "Seeds: ${SEEDS[*]}; GPUs: ${GPUS[*]}"
-echo "Grid: gamma={${GAMMAS[*]}} ltemp={${LAYER_TEMPERATURES[*]}} power={${ATTENTION_POWERS[*]}} mix={${UNIFORM_MIXES[*]}}"
+echo "Grid: logits_alpha={${LOGITS_ALPHAS[*]}} ltemp={${LAYER_TEMPERATURES[*]}} power={${ATTENTION_POWERS[*]}} mix={${UNIFORM_MIXES[*]}}"
 echo "Fixed unpooled attention OT: topk=$OT_TOPK eps=$OT_EPSILON max_iters=$OT_SINKHORN_ITERS tol=$OT_SINKHORN_TOLERANCE"
 echo "Pending generation jobs: ${#JOB_METHODS[@]}"
 declare -a WORKER_PIDS=()
@@ -183,12 +183,12 @@ if (( generation_failed != 0 )); then
   exit 1
 fi
 
-while IFS=$'\t' read -r method seed gamma layer_temperature power mix gpu ids_file result chair_json stats_jsonl; do
+while IFS=$'\t' read -r method seed logits_alpha layer_temperature power mix gpu ids_file result chair_json stats_jsonl; do
   [[ "$method" == method ]] && continue
   if [[ ! -f "$chair_json" ]] || [[ "$chair_json" -ot "$result" ]]; then
     "$PYTHON_BIN" chair_ans.py --cap_file "$result" --coco_path "$VISTA_COCO_ROOT/annotations" \
       --cache "$VISTA_COCO_ROOT/chair.pkl" --save_path "$chair_json" \
-      > "$SWEEP_DIR/logs/chair_${method}_seed${seed}_g${gamma}_lt${layer_temperature}_p${power}_mix${mix}.log" 2>&1
+      > "$SWEEP_DIR/logs/chair_${method}_seed${seed}_alpha${logits_alpha}_lt${layer_temperature}_p${power}_mix${mix}.log" 2>&1
   fi
   if [[ "$method" == ot && ! -f "$stats_jsonl" ]]; then
     echo "Missing OT diagnostics: $stats_jsonl" >&2

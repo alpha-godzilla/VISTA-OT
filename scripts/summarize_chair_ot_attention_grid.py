@@ -11,7 +11,7 @@ import numpy as np
 
 
 METRICS = ("CHAIRs", "CHAIRi", "Recall", "Precision", "F1", "Len")
-CONFIG_FIELDS = ("gamma", "layer_temperature", "attention_power", "uniform_mix")
+CONFIG_FIELDS = ("logits_alpha", "layer_temperature", "attention_power", "uniform_mix")
 
 
 def parse_args():
@@ -60,13 +60,16 @@ def main():
     with args.manifest.open(newline="", encoding="utf-8") as handle:
         for entry in csv.DictReader(handle, delimiter="\t"):
             seed = int(entry["seed"])
-            gamma = float(entry["gamma"])
+            logits_alpha = float(entry["logits_alpha"])
             if entry["method"] == "vista":
-                baselines[(seed, gamma)] = read_metrics(Path(entry["chair_json"]))
+                baselines[(seed, logits_alpha)] = read_metrics(Path(entry["chair_json"]))
                 continue
-            baseline = baselines.get((seed, gamma))
+            baseline = baselines.get((seed, logits_alpha))
             if baseline is None:
-                raise ValueError(f"Missing VISTA baseline for seed={seed}, gamma={gamma}")
+                raise ValueError(
+                    "Missing VISTA baseline for "
+                    f"seed={seed}, logits_alpha={logits_alpha}"
+                )
             metrics = read_metrics(Path(entry["chair_json"]))
             config = config_from_entry(entry)
             row = dict(zip(CONFIG_FIELDS, config))
@@ -125,12 +128,12 @@ def main():
     lines = [
         "# Paired Unpooled Layer-Aligned Attention-OT Sweep",
         "",
-        "| gamma | Layer temp. | Attention power | Uniform mix | Seeds | Delta F1 | Delta CHAIRs | Delta CHAIRi |",
+        "| Logits alpha | Layer temp. | Attention power | Uniform mix | Seeds | Delta F1 | Delta CHAIRs | Delta CHAIRi |",
         "|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summary:
         lines.append(
-            f"| {row['gamma']:g} | {row['layer_temperature']:g} | "
+            f"| {row['logits_alpha']:g} | {row['layer_temperature']:g} | "
             f"{row['attention_power']:g} | {row['uniform_mix']:g} | "
             f"{row['seeds']} | {row['delta_F1_mean']:+.4f} +/- {row['delta_F1_std']:.4f} | "
             f"{row['delta_CHAIRs_mean']:+.4f} +/- {row['delta_CHAIRs_std']:.4f} | "

@@ -123,7 +123,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                         early_logits=early_logits,
                         final_logits=logits[:, -1, :],
                         input_embedding_weight=self.get_input_embeddings().weight,
-                        gamma=self.logits_alpha,
+                        logits_alpha=self.logits_alpha,
                         attentions=outputs.attentions if attention_ot else None,
                         attention_layer_indices=tar_layers if attention_ot else None,
                         output_embedding_weight=(

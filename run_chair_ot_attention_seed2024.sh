@@ -15,7 +15,7 @@ BASELINE_GPU="${BASELINE_GPU:-6}"
 ATTENTION_GPU="${ATTENTION_GPU:-7}"
 EXP_FOLDER="${EXP_FOLDER:-chair_ot_attention_seed2024}"
 LOGITS_LAYERS="${LOGITS_LAYERS:-25,30}"
-LOGITS_ALPHA="${LOGITS_ALPHA:-0.5}"
+LOGITS_ALPHA="${LOGITS_ALPHA:-0.3}"
 VSV_LAMBDA="${VSV_LAMBDA:-0.17}"
 
 # Recommended first configuration. Attention OT uses all original visual

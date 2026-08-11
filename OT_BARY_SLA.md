@@ -32,7 +32,7 @@ node:
 layer_cost[l] = sum(P_local[l] * cost_local[l]) / sum(P_local[l])
 layer_weights = softmax(-layer_cost / ot_layer_temperature)
 augmented_logits = sum(layer_weights * early_logits)
-final_logits = (1 - gamma) * final_logits + gamma * augmented_logits
+final_logits = (1 - logits_alpha) * final_logits + logits_alpha * augmented_logits
 ```
 
 This weighted logit mixture is the closed-form reverse-KL barycenter. It does
@@ -47,7 +47,7 @@ ot_visual_tokens     = 36
 ot_sinkhorn_iters    = 3
 ot_epsilon           = 0.05
 ot_layer_temperature = 0.1
-logits_alpha (gamma) = 0.3
+logits_alpha         = 0.3
 logits_layers        = 25,30
 ```
 
@@ -77,7 +77,7 @@ ot_sinkhorn_tolerance    = 0.001
 ot_layer_temperature     = 0.2
 ot_attention_power       = 0.5
 ot_attention_uniform_mix = 0.02
-logits_alpha (gamma)     = 0.5
+logits_alpha             = 0.3
 ```
 
 `ot_attention_power=0.5` tempers an excessively peaked raw attention map;
@@ -92,8 +92,8 @@ bash run_chair_ot_attention_seed2024.sh
 ```
 
 For an eight-GPU paired search, use the attention-OT-specific grid runner. It
-runs one VISTA baseline per `(seed, gamma)` pair, then searches 30 attention
-configurations by default with fixed `gamma=0.3` and `uniform_mix=0.02`:
+runs one VISTA baseline per `(seed, logits_alpha)` pair, then searches 30 attention
+configurations by default with fixed `logits_alpha=0.3` and `uniform_mix=0.02`:
 `layer_temperature={0.03,0.06,0.1,0.2,0.4,0.8}` and
 `attention_power={0.25,0.5,0.75,1.0,1.5}`. All configurations use unpooled
 visual tokens, `topk=16`, `epsilon=0.05`, at most 50 Sinkhorn iterations, and
@@ -154,7 +154,7 @@ The manifest must contain one unique integer COCO image ID per line. Its order
 is preserved, and random `--subset-size` sampling is disabled when it is set.
 
 Run the default six-GPU refinement for the new marginal design with fixed
-`gamma=0.3`, `lambda=0.17`, `topk={8,10,12,14,16,18,20,24,32}`, and
+`logits_alpha=0.3`, `lambda=0.17`, `topk={8,10,12,14,16,18,20,24,32}`, and
 `visual_tokens={49,64,81}`:
 
 ```bash

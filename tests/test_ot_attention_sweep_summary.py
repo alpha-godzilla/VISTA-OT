@@ -20,16 +20,16 @@ METRICS = {
 
 
 class AttentionSweepSummaryTests(unittest.TestCase):
-    def test_summary_uses_gamma_matched_baseline_and_config_columns(self):
+    def test_summary_uses_alpha_matched_baseline_and_config_columns(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             entries = []
-            for method, gamma, layer_temperature, power, mix, delta in (
+            for method, logits_alpha, layer_temperature, power, mix, delta in (
                 ("vista", "0.5", "baseline", "baseline", "baseline", 0.0),
                 ("ot", "0.5", "0.2", "0.5", "0.02", -0.01),
                 ("ot", "0.5", "0.2", "1.0", "0.0", 0.02),
             ):
-                stem = f"{method}_{gamma}_{layer_temperature}_{power}_{mix}"
+                stem = f"{method}_{logits_alpha}_{layer_temperature}_{power}_{mix}"
                 chair_path = root / f"{stem}_chair.json"
                 chair_path.write_text(
                     json.dumps({
@@ -48,7 +48,7 @@ class AttentionSweepSummaryTests(unittest.TestCase):
                 entries.append({
                     "method": method,
                     "seed": "2024",
-                    "gamma": gamma,
+                    "logits_alpha": logits_alpha,
                     "layer_temperature": layer_temperature,
                     "attention_power": power,
                     "uniform_mix": mix,
@@ -82,7 +82,7 @@ class AttentionSweepSummaryTests(unittest.TestCase):
             with summary.open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 2)
-            self.assertEqual(rows[0]["gamma"], "0.5")
+            self.assertEqual(rows[0]["logits_alpha"], "0.5")
             self.assertAlmostEqual(float(rows[0]["delta_F1_mean"]), -0.01)
             self.assertIn("Attention power", markdown.read_text(encoding="utf-8"))
 
