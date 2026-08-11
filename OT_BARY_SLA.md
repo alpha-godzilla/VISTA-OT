@@ -108,6 +108,14 @@ bash run_chair_ot_attention_vista_preset.sh
 The runner writes a paired `summary.csv`, layer-weight diagnostics, and a
 compact Markdown report under `exp_results/chair_ot_attention_grid/`.
 
+After the broad seed-2024 search, the five-seed refinement around the useful
+region (`layer_temperature={0.06,0.1}`, `attention_power={0.75,1.0}`) is
+available without changing the original VISTA parameters:
+
+```bash
+bash run_chair_ot_attention_multiseed_refine.sh
+```
+
 The repository's historical `25,30` setting is an inclusive six-layer range.
 The OT runner retains it so that original SLA and adaptive OT weighting differ
 only in their aggregation rule. The paper's five-layer setting can be selected
