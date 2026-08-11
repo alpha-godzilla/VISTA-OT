@@ -74,6 +74,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 
         input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
 
+        attention_ot = bool(
+            getattr(self, "use_ot_bary_sla", False)
+            and getattr(self.ot_bary_sla, "attention_visual_marginal", False)
+        )
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -81,7 +85,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            output_attentions=output_attentions,
+            output_attentions=output_attentions or attention_ot,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict
         )
@@ -102,6 +106,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                         raise RuntimeError(
                             "OT-BarySLA is enabled but not initialized"
                         )
+                    if attention_ot and not self.ot_bary_sla.has_layer_visual_cache:
+                        self.ot_bary_sla.cache_layer_visual_features(
+                            [all_hidden_states[idx] for idx in tar_layers]
+                        )
                     # Generation only consumes the current token's logits. This
                     # avoids materializing [B, w, sequence, vocab] at prefill.
                     early_logits = torch.stack(
@@ -116,6 +124,11 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                         final_logits=logits[:, -1, :],
                         input_embedding_weight=self.get_input_embeddings().weight,
                         gamma=self.logits_alpha,
+                        attentions=outputs.attentions if attention_ot else None,
+                        attention_layer_indices=tar_layers if attention_ot else None,
+                        output_embedding_weight=(
+                            self.lm_head.weight if attention_ot else None
+                        ),
                     )
                     if logits.shape[1] == 1:
                         logits = mixed_logits.unsqueeze(1)

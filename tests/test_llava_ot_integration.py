@@ -12,7 +12,7 @@ from llava.model.language_model.llava_llama import (
 from steering_vector import add_logits_flag, remove_logits_flag
 
 
-def make_args(use_ot=False, force_uniform=False):
+def make_args(use_ot=False, force_uniform=False, attention_visual=False):
     return SimpleNamespace(
         logits_aug=True,
         logits_layers="1,2",
@@ -21,9 +21,13 @@ def make_args(use_ot=False, force_uniform=False):
         ot_topk=4,
         ot_visual_tokens=4,
         ot_sinkhorn_iters=3,
+        ot_sinkhorn_tolerance=1e-3,
         ot_epsilon=0.05,
         ot_log_stats=False,
         ot_force_uniform=force_uniform,
+        ot_attention_visual_marginal=attention_visual,
+        ot_attention_power=0.5,
+        ot_attention_uniform_mix=0.02,
     )
 
 
@@ -212,6 +216,64 @@ class TinyLlavaIntegrationTests(unittest.TestCase):
                     remove_logits_flag(self.model)
                 self.assertEqual(output.shape[0], 1)
                 self.assertGreater(output.shape[1], input_ids.shape[1])
+
+    def test_attention_visual_ot_caches_positions_and_uses_decoder_attention(self):
+        class FakeVisionTower(nn.Module):
+            def forward(self, images):
+                values = torch.arange(
+                    4 * self_hidden_size,
+                    device=images.device,
+                    dtype=images.dtype,
+                )
+                return values.reshape(1, 4, self_hidden_size).repeat(
+                    images.shape[0], 1, 1,
+                )
+
+        self_hidden_size = self.model.config.hidden_size
+        self.model.model.vision_tower = FakeVisionTower()
+        self.model.model.mm_projector = nn.Identity()
+        input_ids = torch.tensor([[1, IMAGE_TOKEN_INDEX, 10, 11]])
+        images = torch.randn(1, 3, 2, 2)
+        add_logits_flag(
+            self.model, make_args(use_ot=True, attention_visual=True),
+        )
+        try:
+            with torch.no_grad():
+                output = self.model(
+                    input_ids=input_ids,
+                    images=images,
+                    use_cache=True,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+            self.assertIsNotNone(output.attentions)
+            self.assertEqual(
+                self.model.ot_bary_sla._visual_attention_positions.sum().item(),
+                4,
+            )
+            self.assertEqual(self.model.ot_bary_sla._visual_extended.shape[1], 4)
+            self.assertEqual(
+                self.model.ot_bary_sla._layer_visual_features.shape,
+                (1, 2, 4, self.model.config.hidden_size),
+            )
+            cached_visual = self.model.ot_bary_sla._layer_visual_features.clone()
+            past_length = output.past_key_values[-1][-1].shape[-2]
+            with torch.no_grad():
+                self.model(
+                    input_ids=torch.tensor([[12]]),
+                    images=images,
+                    past_key_values=output.past_key_values,
+                    attention_mask=torch.ones(1, past_length + 1),
+                    use_cache=True,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+            torch.testing.assert_close(
+                self.model.ot_bary_sla._layer_visual_features,
+                cached_visual,
+            )
+        finally:
+            remove_logits_flag(self.model)
 
 
 if __name__ == "__main__":

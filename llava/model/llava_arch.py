@@ -126,6 +126,7 @@ class LlavaMetaForCausalLM(ABC):
 
         new_input_embeds = []
         new_labels = [] if labels is not None else None
+        new_visual_position_masks = []
         cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids):
             if (cur_input_ids == IMAGE_TOKEN_INDEX).sum() == 0:
@@ -137,12 +138,17 @@ class LlavaMetaForCausalLM(ABC):
                 cur_input_embeds_2 = self.get_model().embed_tokens(cur_input_ids[half_len:])
                 cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0], cur_input_embeds_2], dim=0)
                 new_input_embeds.append(cur_input_embeds)
+                new_visual_position_masks.append(torch.zeros(
+                    cur_input_embeds.shape[0], dtype=torch.bool,
+                    device=cur_input_embeds.device,
+                ))
                 if labels is not None:
                     new_labels.append(labels[batch_idx])
                 cur_image_idx += 1
                 continue
             image_token_indices = torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0]
             cur_new_input_embeds = []
+            cur_visual_position_masks = []
             if labels is not None:
                 cur_labels = labels[batch_idx]
                 cur_new_labels = []
@@ -155,6 +161,12 @@ class LlavaMetaForCausalLM(ABC):
                     cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids[image_token_start-1:image_token_start]))
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids[image_token_start+1:image_token_start+2]))
+                    cur_visual_position_masks.extend([
+                        torch.zeros(image_token_start - 1, dtype=torch.bool, device=cur_image_features.device),
+                        torch.zeros(1, dtype=torch.bool, device=cur_image_features.device),
+                        torch.ones(cur_image_features.shape[0], dtype=torch.bool, device=cur_image_features.device),
+                        torch.zeros(1, dtype=torch.bool, device=cur_image_features.device),
+                    ])
                     if labels is not None:
                         cur_new_labels.append(cur_labels[:image_token_start])
                         cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=labels.device, dtype=labels.dtype))
@@ -163,6 +175,10 @@ class LlavaMetaForCausalLM(ABC):
                 else:
                     cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids[:image_token_start]))
                     cur_new_input_embeds.append(cur_image_features)
+                    cur_visual_position_masks.extend([
+                        torch.zeros(image_token_start, dtype=torch.bool, device=cur_image_features.device),
+                        torch.ones(cur_image_features.shape[0], dtype=torch.bool, device=cur_image_features.device),
+                    ])
                     if labels is not None:
                         cur_new_labels.append(cur_labels[:image_token_start])
                         cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=labels.device, dtype=labels.dtype))
@@ -178,11 +194,16 @@ class LlavaMetaForCausalLM(ABC):
                     cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids).detach())
                 else:
                     cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids))
+                cur_visual_position_masks.append(torch.zeros(
+                    cur_input_ids.shape[0], dtype=torch.bool,
+                    device=cur_input_ids.device,
+                ))
                 if labels is not None:
                     cur_new_labels.append(cur_labels)
             cur_new_input_embeds = [x.to(device=self.device) for x in cur_new_input_embeds]
             cur_new_input_embeds = torch.cat(cur_new_input_embeds, dim=0)
             new_input_embeds.append(cur_new_input_embeds)
+            new_visual_position_masks.append(torch.cat(cur_visual_position_masks))
             if labels is not None:
                 cur_new_labels = torch.cat(cur_new_labels, dim=0)
                 new_labels.append(cur_new_labels)
@@ -195,6 +216,12 @@ class LlavaMetaForCausalLM(ABC):
                 cur_new_embed = torch.cat((cur_new_embed, torch.zeros((max_len - cur_new_embed.shape[0], cur_new_embed.shape[1]), dtype=cur_new_embed.dtype, device=cur_new_embed.device)), dim=0)
                 new_input_embeds_align.append(cur_new_embed)
             new_input_embeds = torch.stack(new_input_embeds_align, dim=0)
+            new_visual_position_masks = torch.stack([
+                torch.cat((mask, torch.zeros(
+                    max_len - mask.shape[0], dtype=torch.bool, device=mask.device,
+                )))
+                for mask in new_visual_position_masks
+            ])
 
             if labels is not None:
                 new_labels_align = []
@@ -215,6 +242,7 @@ class LlavaMetaForCausalLM(ABC):
                 assert attention_mask.shape == new_labels.shape
         else:
             new_input_embeds = torch.stack(new_input_embeds, dim=0)
+            new_visual_position_masks = torch.stack(new_visual_position_masks, dim=0)
             if labels is not None:
                 new_labels  = torch.stack(new_labels, dim=0)
 
@@ -222,6 +250,13 @@ class LlavaMetaForCausalLM(ABC):
                 new_attn_mask_pad_left = torch.full((attention_mask.shape[0], new_input_embeds.shape[1] - input_ids.shape[1]), True, dtype=attention_mask.dtype, device=attention_mask.device)
                 attention_mask = torch.cat((new_attn_mask_pad_left, attention_mask), dim=1)
                 assert attention_mask.shape == new_input_embeds.shape[:2]
+
+        if getattr(self, "use_ot_bary_sla", False) and getattr(
+            self.ot_bary_sla, "attention_visual_marginal", False,
+        ):
+            self.ot_bary_sla.cache_visual_attention_positions(
+                new_visual_position_masks,
+            )
 
         return None, attention_mask, past_key_values, new_input_embeds, new_labels
 

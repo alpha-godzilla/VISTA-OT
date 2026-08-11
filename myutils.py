@@ -42,8 +42,19 @@ def add_ot_bary_sla_arguments(parser):
         help="Use OT-derived dynamic weights instead of uniform SLA weights.",
     )
     group.add_argument("--ot-topk", type=int, default=8)
-    group.add_argument("--ot-visual-tokens", type=int, default=36)
+    group.add_argument(
+        "--ot-visual-tokens",
+        type=int,
+        default=36,
+        help="Legacy OT2 pooling target; ignored by unpooled attention OT.",
+    )
     group.add_argument("--ot-sinkhorn-iters", type=int, default=3)
+    group.add_argument(
+        "--ot-sinkhorn-tolerance",
+        type=float,
+        default=1e-3,
+        help="Maximum marginal residual for Sinkhorn early stopping.",
+    )
     group.add_argument("--ot-epsilon", type=float, default=0.05)
     group.add_argument(
         "--ot-layer-temperature",
@@ -61,6 +72,26 @@ def add_ot_bary_sla_arguments(parser):
         action="store_true",
         help="Regression mode: force uniform early-layer weights.",
     )
+    group.add_argument(
+        "--ot-attention-visual-marginal",
+        action="store_true",
+        help=(
+            "Use current-token decoder attention over real image patches as "
+            "the OT visual marginal; no visual dustbin is added."
+        ),
+    )
+    group.add_argument(
+        "--ot-attention-power",
+        type=float,
+        default=0.5,
+        help="Power applied to unpooled visual attention before normalization.",
+    )
+    group.add_argument(
+        "--ot-attention-uniform-mix",
+        type=float,
+        default=0.02,
+        help="Small uniform smoothing mass over real visual OT nodes.",
+    )
     return parser
 
 
@@ -77,6 +108,12 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError("--logits-alpha must be in [0, 1]")
     if args.ot_layer_temperature <= 0:
         raise ValueError("--ot-layer-temperature must be positive")
+    if args.ot_sinkhorn_tolerance <= 0:
+        raise ValueError("--ot-sinkhorn-tolerance must be positive")
+    if args.ot_attention_power <= 0:
+        raise ValueError("--ot-attention-power must be positive")
+    if not 0.0 <= args.ot_attention_uniform_mix < 1.0:
+        raise ValueError("--ot-attention-uniform-mix must be in [0, 1)")
     try:
         start_layer, end_layer = map(int, args.logits_layers.split(","))
     except ValueError as exc:
@@ -108,18 +145,37 @@ def prepare_common_fileparts(args):
         file_parts.append(f"loglayer_{args.logits_layers}")
         file_parts.append(f"logalpha_{args.logits_alpha}")
         if getattr(args, "use_ot_bary_sla", False):
-            file_parts.extend(
-                [
-                    "otbary",
-                    "vdust",
-                    "tlogit",
-                    f"m{args.ot_topk}",
-                    f"k{args.ot_visual_tokens}",
-                    f"it{args.ot_sinkhorn_iters}",
-                    f"eps{args.ot_epsilon}",
-                    f"ltemp{args.ot_layer_temperature}",
-                ]
-            )
+            if getattr(args, "ot_attention_visual_marginal", False):
+                file_parts.extend(
+                    [
+                        "otattn",
+                        "nodust",
+                        "layerhid",
+                        "lmhead",
+                        "tlogit",
+                        f"m{args.ot_topk}",
+                        "kunpooled",
+                        f"it{args.ot_sinkhorn_iters}",
+                        f"tol{args.ot_sinkhorn_tolerance}",
+                        f"eps{args.ot_epsilon}",
+                        f"ltemp{args.ot_layer_temperature}",
+                        f"apow{args.ot_attention_power}",
+                        f"amix{args.ot_attention_uniform_mix}",
+                    ]
+                )
+            else:
+                file_parts.extend(
+                    [
+                        "otbary",
+                        "vdust",
+                        "tlogit",
+                        f"m{args.ot_topk}",
+                        f"k{args.ot_visual_tokens}",
+                        f"it{args.ot_sinkhorn_iters}",
+                        f"eps{args.ot_epsilon}",
+                        f"ltemp{args.ot_layer_temperature}",
+                    ]
+                )
             if args.ot_force_uniform:
                 file_parts.append("uniform")
 

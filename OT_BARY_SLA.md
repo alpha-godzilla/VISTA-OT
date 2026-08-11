@@ -51,6 +51,46 @@ logits_alpha (gamma) = 0.3
 logits_layers        = 25,30
 ```
 
+## Attention visual marginal (no dustbin)
+
+The `--ot-attention-visual-marginal` variant leaves OT2 intact and instead
+uses the current decoder query's attention to the original image-patch
+positions as its visual OT marginal. It keeps every original image token and
+does not pool either visual hidden states or attention weights. During
+multimodal prefill it caches the image-position hidden states at each selected
+SLA layer. Its layer-specific cost is
+
+```text
+C[l,k,m] = 1 - cosine(layer_visual_hidden[l,k], lm_head.weight[token[l,m]])
+```
+
+so the visual representation, current-query attention, candidate logits, and
+output token directions are aligned to the same layer. There is no global
+visual node or dustbin in this variant.
+
+```text
+ot_topk                  = 16
+visual tokens            = all original image tokens (unpooled)
+ot_epsilon               = 0.05
+ot_sinkhorn_iters        = 50 (maximum)
+ot_sinkhorn_tolerance    = 0.001
+ot_layer_temperature     = 0.2
+ot_attention_power       = 0.5
+ot_attention_uniform_mix = 0.02
+logits_alpha (gamma)     = 0.5
+```
+
+`ot_attention_power=0.5` tempers an excessively peaked raw attention map;
+the small `uniform_mix` is only numerical smoothing over real patches, not a
+dustbin. Sinkhorn checks both marginal residuals every five iterations and
+stops early once their maximum is at most the configured tolerance. A matched
+seed-2024 CHAIR baseline/attention-OT run on GPUs 6 and 7 is provided by:
+
+```bash
+PYTHON_BIN=/home/ljc/miniconda3/envs/formodelling-gpu/bin/python \
+bash run_chair_ot_attention_seed2024.sh
+```
+
 The repository's historical `25,30` setting is an inclusive six-layer range.
 The OT runner retains it so that original SLA and adaptive OT weighting differ
 only in their aggregation rule. The paper's five-layer setting can be selected

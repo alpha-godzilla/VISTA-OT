@@ -153,10 +153,18 @@ def add_logits_flag(model, args, tokenizer=None):
             visual_tokens=getattr(args, 'ot_visual_tokens', 36),
             epsilon=getattr(args, 'ot_epsilon', 0.05),
             sinkhorn_iters=getattr(args, 'ot_sinkhorn_iters', 3),
+            sinkhorn_tolerance=getattr(args, 'ot_sinkhorn_tolerance', 1e-3),
             layer_temperature=getattr(args, 'ot_layer_temperature', 0.1),
             special_token_ids=special_token_ids,
             log_stats=getattr(args, 'ot_log_stats', False),
             force_uniform=getattr(args, 'ot_force_uniform', False),
+            attention_visual_marginal=getattr(
+                args, 'ot_attention_visual_marginal', False,
+            ),
+            attention_power=getattr(args, 'ot_attention_power', 0.5),
+            attention_uniform_mix=getattr(
+                args, 'ot_attention_uniform_mix', 0.02,
+            ),
         )
     else:
         model.ot_bary_sla = None

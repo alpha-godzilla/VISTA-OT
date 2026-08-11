@@ -44,6 +44,22 @@ class LogSinkhornTests(unittest.TestCase):
             rtol=1e-5,
         )
 
+    def test_tolerance_bounds_both_marginal_residuals(self):
+        torch.manual_seed(11)
+        cost = torch.rand(1, 2, 32, 8)
+        source = torch.softmax(torch.randn(1, 2, 32) * 2.0, dim=-1)
+        target = torch.softmax(torch.randn(1, 2, 8), dim=-1)
+        plan = log_sinkhorn(
+            cost, source, target,
+            epsilon=0.05, num_iters=200, tolerance=1e-3,
+        )
+        self.assertLessEqual(
+            (plan.sum(dim=-1) - source).abs().max().item(), 1e-3,
+        )
+        self.assertLessEqual(
+            (plan.sum(dim=-2) - target).abs().max().item(), 1e-3,
+        )
+
 
 class OTBarySLATests(unittest.TestCase):
     def setUp(self):
@@ -256,6 +272,108 @@ class OTBarySLATests(unittest.TestCase):
         self.assertIn("mean_local_transport_mass", diagnostics)
         self.assertIn("mean_dustbin_to_token_mass", diagnostics)
         self.assertNotIn("mean_token_to_dustbin_mass", diagnostics)
+
+    def test_attention_visual_marginal_has_no_dustbin_and_tracks_attention(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            epsilon=0.1,
+            sinkhorn_iters=50,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.0,
+        )
+        visual = torch.randn(1, 4, 12)
+        method.cache_visual_features(visual)
+        positions = torch.tensor([[False, True, True, True, True, False]])
+        method.cache_visual_attention_positions(positions)
+        layer_hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((layer_hidden, layer_hidden.clone()))
+        # Two requested layers, two heads, one query, and six key positions.
+        attention = torch.zeros(1, 2, 1, 6)
+        attention[..., 1] = 0.7
+        attention[..., 2] = 0.2
+        attention[..., 3] = 0.1
+        attentions = (attention, attention.clone())
+        weights, details = method.compute_layer_weights(
+            self.early_logits[:1, :2],
+            self.embedding,
+            return_details=True,
+            attentions=attentions,
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+
+        self.assertEqual(details["transport_plan"].shape, (1, 2, 4, 2))
+        self.assertEqual(details["source_marginal"].shape, (1, 2, 4))
+        torch.testing.assert_close(
+            details["source_marginal"][0, 0],
+            torch.tensor([0.7, 0.2, 0.1, 0.0]),
+            atol=1e-6,
+            rtol=1e-6,
+        )
+        torch.testing.assert_close(
+            details["transport_plan"].sum(dim=(-2, -1)),
+            torch.ones(1, 2),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+        self.assertTrue(torch.isfinite(weights).all())
+
+    def test_attention_visual_path_never_pools_layer_tokens(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            attention_visual_marginal=True,
+        )
+        visual = torch.randn(1, 16, 12)
+        method.cache_visual_features(visual)
+        positions = torch.zeros(1, 18, dtype=torch.bool)
+        positions[:, 1:17] = True
+        method.cache_visual_attention_positions(positions)
+        hidden = torch.randn(1, 18, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+
+        self.assertEqual(method._visual_local.shape[1], 16)
+        self.assertEqual(method._layer_visual_features.shape[2], 16)
+
+    def test_attention_cost_aligns_layer_hidden_with_lm_head_rows(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=1,
+            epsilon=0.1,
+            sinkhorn_iters=50,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.0,
+        )
+        method.cache_visual_features(torch.randn(1, 2, 2))
+        positions = torch.tensor([[False, True, True]])
+        method.cache_visual_attention_positions(positions)
+        layer_zero = torch.tensor([[[0.0, 0.0], [1.0, 0.0], [1.0, 0.0]]])
+        layer_one = torch.tensor([[[0.0, 0.0], [0.0, 1.0], [0.0, 1.0]]])
+        method.cache_layer_visual_features((layer_zero, layer_one))
+
+        early_logits = torch.tensor([[[5.0, 5.0, -5.0, -5.0],
+                                      [5.0, 5.0, -5.0, -5.0]]])
+        # Deliberately oppose input embeddings and lm-head rows. Correctly
+        # using the lm-head rows makes layer zero the aligned layer.
+        input_embeddings = torch.tensor([[0.0, 1.0], [0.0, 1.0],
+                                         [1.0, 0.0], [1.0, 0.0]])
+        lm_head_rows = torch.tensor([[1.0, 0.0], [1.0, 0.0],
+                                     [0.0, 1.0], [0.0, 1.0]])
+        attention = torch.ones(1, 1, 1, 3)
+        weights, details = method.compute_layer_weights(
+            early_logits,
+            input_embeddings,
+            return_details=True,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=lm_head_rows,
+        )
+
+        self.assertEqual(details["layer_costs"].argmin(dim=-1).item(), 0)
+        self.assertEqual(weights.argmax(dim=-1).item(), 0)
 
 
 if __name__ == "__main__":

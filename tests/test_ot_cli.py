@@ -54,6 +54,24 @@ class OTBaryCLICompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only --model llava-1.5"):
             myutils.validate_ot_bary_sla_arguments(args)
 
+    def test_attention_ot_filename_describes_unpooled_aligned_method(self):
+        args = common_args()
+        args.use_ot_bary_sla = True
+        args.ot_attention_visual_marginal = True
+        args.ot_topk = 16
+        args.ot_sinkhorn_iters = 50
+        args.ot_sinkhorn_tolerance = 1e-3
+        args.ot_epsilon = 0.05
+        args.ot_layer_temperature = 0.2
+        args.ot_attention_power = 0.5
+        args.ot_attention_uniform_mix = 0.02
+        args.ot_force_uniform = False
+
+        actual = "_".join(myutils.prepare_common_fileparts(args))
+        self.assertIn("otattn_nodust_layerhid_lmhead_tlogit", actual)
+        self.assertIn("m16_kunpooled_it50_tol0.001", actual)
+        self.assertNotIn("vdust", actual)
+
 
 if __name__ == "__main__":
     unittest.main()
