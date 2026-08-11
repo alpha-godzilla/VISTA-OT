@@ -77,7 +77,7 @@ ot_sinkhorn_tolerance    = 0.001
 ot_layer_temperature     = 0.2
 ot_attention_power       = 0.5
 ot_attention_uniform_mix = 0.02
-logits_alpha             = 0.3
+logits_alpha             = 0.5
 ```
 
 `ot_attention_power=0.5` tempers an excessively peaked raw attention map;
@@ -102,7 +102,6 @@ tolerance `1e-3`.
 
 ```bash
 GPU_IDS="0 1 2 3 4 5 6 7" \
-PYTHON_BIN=/home/ljc/miniconda3/envs/formodelling-gpu/bin/python \
 bash run_chair_ot_attention_vista_preset.sh
 ```
 
