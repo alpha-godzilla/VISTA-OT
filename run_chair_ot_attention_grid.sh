@@ -95,6 +95,13 @@ is_complete_result() {
   [[ -f "$1" ]] && [[ "$(wc -l < "$1")" -eq "$SUBSET_SIZE" ]]
 }
 
+# chair_eval parses CLI values as Python floats and uses their Python string
+# representation in result filenames (e.g. 0.20 becomes 0.2). Canonicalize
+# the grid value before building expected paths so completion checks agree.
+canonical_python_float() {
+  "$PYTHON_BIN" -c 'import sys; print(float(sys.argv[1]))' "$1"
+}
+
 printf 'method\tseed\tlogits_alpha\tlayer_temperature\tattention_power\tuniform_mix\tgpu\tids_file\tresult_jsonl\tchair_json\tstats_jsonl\n' > "$MANIFEST"
 declare -a JOB_METHODS=() JOB_SEEDS=() JOB_LOGITS_ALPHAS=() JOB_LAYER_TEMPERATURES=() JOB_POWERS=() JOB_MIXES=() JOB_IDS_FILES=() JOB_RESULTS=()
 pending_count=0
@@ -121,7 +128,8 @@ for seed in "${SEEDS[@]}"; do
       --data-path "$VISTA_COCO_ROOT/val2014" --seed "$seed" \
       --subset-size "$SUBSET_SIZE" --output "$ids_file"
   fi
-  for logits_alpha in "${LOGITS_ALPHAS[@]}"; do
+  for raw_logits_alpha in "${LOGITS_ALPHAS[@]}"; do
+    logits_alpha="$(canonical_python_float "$raw_logits_alpha")"
     enqueue vista "$seed" "$logits_alpha" baseline baseline baseline "$ids_file" "$(vista_result_path "$seed" "$logits_alpha")"
     for layer_temperature in "${LAYER_TEMPERATURES[@]}"; do
       for power in "${ATTENTION_POWERS[@]}"; do
