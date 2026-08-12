@@ -116,6 +116,17 @@ available without changing the original VISTA parameters:
 bash run_chair_ot_attention_multiseed_refine.sh
 ```
 
+To search VISTA's original `logits_alpha` jointly for a matched original-VISTA
+baseline and the fixed attention-OT setting (`layer_temperature=0.06`,
+`attention_power=0.75`, `uniform_mix=0.02`, `topk=16`, `epsilon=0.05`), run:
+
+```bash
+bash run_chair_ot_attention_alpha_multiseed.sh
+```
+
+It evaluates `logits_alpha={0.15,0.20,0.25,0.30,0.35}` for both methods on
+the same five seed-specific image subsets, so every reported delta is paired.
+
 The repository's historical `25,30` setting is an inclusive six-layer range.
 The OT runner retains it so that original SLA and adaptive OT weighting differ
 only in their aggregation rule. The paper's five-layer setting can be selected

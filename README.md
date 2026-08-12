@@ -136,6 +136,16 @@ configurations. Run the corresponding refinement with:
 bash run_chair_ot_attention_multiseed_refine.sh
 ```
 
+To tune VISTA's original `logits_alpha` fairly for both original VISTA and
+attention-OT, run the paired five-seed alpha search. It fixes attention-OT at
+layer temperature `0.06`, attention power `0.75`, uniform mix `0.02`, top-k
+`16`, and epsilon `0.05` while searching alpha values `0.15–0.35` for both
+methods:
+
+```bash
+bash run_chair_ot_attention_alpha_multiseed.sh
+```
+
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
 Here gamma refers to VISTA's `--logits-alpha`. The 24 runs are distributed
