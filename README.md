@@ -109,6 +109,33 @@ is unchanged when `--use-ot-bary-sla` is absent.
 See [OT_BARY_SLA.md](OT_BARY_SLA.md) for the method, commands, tests, and
 benchmark procedure.
 
+### Attention-OT CHAIR results
+
+The unpooled attention-OT variant keeps VISTA's `vsv_lambda=0.17`,
+`logits_alpha=0.3`, and `logits_layers=25,30`.  It replaces only SLA's
+uniform average over the selected early-layer logits with OT-derived,
+image-conditioned layer weights.  The table reports matched five-seed CHAIR
+evaluation (`seeds={1994,2024,3407,42,1234}`; 500 captions per seed), with
+`uniform_mix=0.02`. Deltas are paired OT minus VISTA values for the same seed;
+the value after `+/-` is the across-seed standard deviation of that delta.
+
+| Method / attention-OT setting | CHAIRs ↓ | Δ CHAIRs | CHAIRi ↓ | Δ CHAIRi | Recall ↑ | Precision ↑ | F1 ↑ | Δ F1 | Len |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| VISTA baseline | 0.1676 | — | 0.0674 | — | 0.5711 | 0.8917 | 0.6963 | — | 1.6370 |
+| OT: layer temp. `0.06`, attention power `0.75` **(hallucination priority)** | **0.1436** | **-0.0240 +/- 0.0105** | **0.0525** | **-0.0149 +/- 0.0057** | 0.5370 | **0.9017** | 0.6731 | -0.0232 +/- 0.0077 | 2.0638 |
+| OT: layer temp. `0.06`, attention power `1.0` | 0.1464 | -0.0212 +/- 0.0155 | 0.0547 | -0.0126 +/- 0.0046 | 0.5404 | 0.8986 | 0.6748 | -0.0215 +/- 0.0089 | 2.0006 |
+| OT: layer temp. `0.10`, attention power `0.75` | 0.1496 | -0.0180 +/- 0.0127 | 0.0610 | -0.0064 +/- 0.0049 | 0.5463 | 0.8985 | 0.6795 | -0.0168 +/- 0.0093 | 1.8863 |
+| OT: layer temp. `0.10`, attention power `1.0` **(F1-balanced)** | 0.1516 | -0.0160 +/- 0.0091 | 0.0608 | -0.0066 +/- 0.0085 | **0.5486** | 0.8978 | **0.6811** | **-0.0152 +/- 0.0068** | **1.8729** |
+
+All four settings reduce CHAIRs relative to VISTA. The `0.06/0.75` setting is
+the preferred choice when hallucination reduction is the primary objective;
+`0.10/1.0` gives the smallest F1 decrease among the evaluated attention-OT
+configurations. Run the corresponding refinement with:
+
+```bash
+bash run_chair_ot_attention_multiseed_refine.sh
+```
+
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
 Here gamma refers to VISTA's `--logits-alpha`. The 24 runs are distributed
