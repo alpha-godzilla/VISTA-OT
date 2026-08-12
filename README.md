@@ -146,6 +146,16 @@ methods:
 bash run_chair_ot_attention_alpha_multiseed.sh
 ```
 
+For a single-image diagnosis of whether attention-OT under-attends to selected
+COCO object boxes, run:
+
+```bash
+bash run_chair_ot_attention_trace.sh COCO_IMAGE_ID
+```
+
+It writes an object-level attention-coverage report beside the single-image
+result. See [OT_BARY_SLA.md](OT_BARY_SLA.md) for the interpretation.
+
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
 Here gamma refers to VISTA's `--logits-alpha`. The 24 runs are distributed

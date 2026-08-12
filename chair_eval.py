@@ -87,7 +87,7 @@ def main(args):
         exit(f"Result file {result_file} already exists. Exiting.")
     f = open(result_file, "w", encoding="utf-8")
     stats_file = None
-    if args.use_ot_bary_sla and args.ot_log_stats:
+    if args.use_ot_bary_sla and (args.ot_log_stats or args.ot_attention_trace):
         stats_file = open(
             os.path.join(args.save_dir, args.file_name + "_ot_stats.jsonl"),
             "w",

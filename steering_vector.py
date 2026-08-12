@@ -165,6 +165,7 @@ def add_logits_flag(model, args, tokenizer=None):
             attention_uniform_mix=getattr(
                 args, 'ot_attention_uniform_mix', 0.02,
             ),
+            trace_attention=getattr(args, 'ot_attention_trace', False),
         )
     else:
         model.ot_bary_sla = None

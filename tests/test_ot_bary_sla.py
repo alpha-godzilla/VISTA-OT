@@ -320,6 +320,44 @@ class OTBarySLATests(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(weights).all())
 
+    def test_attention_trace_records_effective_patch_mass(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            epsilon=0.1,
+            sinkhorn_iters=50,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.0,
+            trace_attention=True,
+        )
+        visual = torch.randn(1, 4, 12)
+        method.cache_visual_features(visual)
+        positions = torch.tensor([[False, True, True, True, True, False]])
+        method.cache_visual_attention_positions(positions)
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        attention = torch.zeros(1, 2, 1, 6)
+        attention[..., 1] = 0.7
+        attention[..., 2] = 0.2
+        attention[..., 3] = 0.1
+        method.aggregate(
+            self.early_logits[:1, :2],
+            torch.randn(1, 32),
+            self.embedding,
+            logits_alpha=0.3,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+
+        trace = method.get_diagnostics()["attention_trace"]
+        self.assertEqual(len(trace), 1)
+        self.assertEqual(len(trace[0]["effective_source_marginal"][0]), 4)
+        self.assertAlmostEqual(
+            sum(trace[0]["effective_source_marginal"][0]), 1.0, places=5,
+        )
+
     def test_attention_visual_path_never_pools_layer_tokens(self):
         method = OTBarySLA(
             topk=2,

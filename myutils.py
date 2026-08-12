@@ -92,6 +92,14 @@ def add_ot_bary_sla_arguments(parser):
         default=0.02,
         help="Small uniform smoothing mass over real visual OT nodes.",
     )
+    group.add_argument(
+        "--ot-attention-trace",
+        action="store_true",
+        help=(
+            "For single-image diagnosis, save per-step visual attention "
+            "marginals and OT layer weights in the OT statistics JSONL."
+        ),
+    )
     return parser
 
 

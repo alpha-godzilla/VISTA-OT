@@ -127,6 +127,23 @@ bash run_chair_ot_attention_alpha_multiseed.sh
 It evaluates `logits_alpha={0.15,0.20,0.25,0.30,0.35}` for both methods on
 the same five seed-specific image subsets, so every reported delta is paired.
 
+### Attention coverage diagnosis
+
+To test whether attention-OT concentrates mass on salient objects while
+under-covering other ground-truth COCO objects, run a single-image trace:
+
+```bash
+bash run_chair_ot_attention_trace.sh COCO_IMAGE_ID
+```
+
+The run writes `coverage.md` and `coverage.json` below
+`exp_results/attention_ot_trace_COCO_IMAGE_ID/`. For each COCO box, the report
+contains its effective attention mass, formed by combining each layer's visual
+OT marginal with that step's OT layer weights. `enrichment_vs_uniform < 1`
+means the object box receives less mass than a uniform distribution over image
+patches would assign. This diagnoses visual-mass concentration, not whether a
+caption explicitly names the object; inspect the paired generated caption too.
+
 The repository's historical `25,30` setting is an inclusive six-layer range.
 The OT runner retains it so that original SLA and adaptive OT weighting differ
 only in their aggregation rule. The paper's five-layer setting can be selected

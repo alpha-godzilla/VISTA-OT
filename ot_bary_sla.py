@@ -161,6 +161,7 @@ class OTBarySLA:
         attention_visual_marginal: bool = False,
         attention_power: float = 0.5,
         attention_uniform_mix: float = 0.02,
+        trace_attention: bool = False,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -200,6 +201,7 @@ class OTBarySLA:
         self.attention_visual_marginal = attention_visual_marginal
         self.attention_power = attention_power
         self.attention_uniform_mix = attention_uniform_mix
+        self.trace_attention = trace_attention
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -207,6 +209,7 @@ class OTBarySLA:
         self._layer_visual_features: Optional[torch.Tensor] = None
         self._stats: Dict[str, torch.Tensor] = {}
         self._stats_steps = 0
+        self._attention_trace: List[Dict[str, object]] = []
 
     @property
     def has_visual_cache(self) -> bool:
@@ -219,6 +222,7 @@ class OTBarySLA:
         self._layer_visual_features = None
         self._stats = {}
         self._stats_steps = 0
+        self._attention_trace = []
 
     @torch.no_grad()
     def cache_visual_features(self, projected_visual_tokens: TensorOrTensors) -> None:
@@ -273,6 +277,7 @@ class OTBarySLA:
         self._stats = {}
         self._stats_steps = 0
         self._layer_visual_features = None
+        self._attention_trace = []
 
     @torch.no_grad()
     def cache_visual_attention_positions(self, positions: torch.Tensor) -> None:
@@ -500,18 +505,40 @@ class OTBarySLA:
 
     def get_diagnostics(self) -> Dict[str, Union[int, float, List[float]]]:
         """Return generation-level statistics, synchronizing only once."""
-        if not self.log_stats or self._stats_steps == 0:
+        if (
+            (not self.log_stats or self._stats_steps == 0)
+            and not self._attention_trace
+        ):
             return {}
 
-        result: Dict[str, Union[int, float, List[float]]] = {
-            "steps": self._stats_steps
-        }
-        for name, total in self._stats.items():
-            mean = (total / self._stats_steps).detach().float().cpu()
-            result[f"mean_{name}"] = (
-                mean.item() if mean.ndim == 0 else mean.tolist()
-            )
+        result: Dict[str, Union[int, float, List[float]]] = {}
+        if self.log_stats and self._stats_steps:
+            result["steps"] = self._stats_steps
+            for name, total in self._stats.items():
+                mean = (total / self._stats_steps).detach().float().cpu()
+                result[f"mean_{name}"] = (
+                    mean.item() if mean.ndim == 0 else mean.tolist()
+                )
+        if self._attention_trace:
+            result["attention_trace"] = self._attention_trace
         return result
+
+    def _record_attention_trace(self, details: Dict[str, torch.Tensor]) -> None:
+        """Store compact per-step tensors for a single-image diagnosis run."""
+        if not self.trace_attention or not self.attention_visual_marginal:
+            return
+        source = details["source_marginal"].detach().float().cpu()
+        weights = details["layer_weights"].detach().float().cpu()
+        effective_source = (source * weights.unsqueeze(-1)).sum(dim=1)
+        self._attention_trace.append(
+            {
+                "source_marginal": source.tolist(),
+                "effective_source_marginal": effective_source.tolist(),
+                "layer_weights": weights.tolist(),
+                "layer_costs": details["layer_costs"].detach().float().cpu().tolist(),
+                "candidate_ids": details["candidate_ids"].detach().cpu().tolist(),
+            }
+        )
 
     @torch.no_grad()
     def compute_layer_weights(
@@ -715,4 +742,5 @@ class OTBarySLA:
         )
         details["layer_weights"] = layer_weights
         details["augmented_logits"] = augmented
+        self._record_attention_trace(details)
         return mixed, details
