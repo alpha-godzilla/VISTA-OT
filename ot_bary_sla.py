@@ -162,6 +162,10 @@ class OTBarySLA:
         attention_power: float = 0.5,
         attention_uniform_mix: float = 0.02,
         trace_attention: bool = False,
+        attention_coverage_beta: float = 0.0,
+        attention_coverage_epsilon: float = 0.1,
+        adaptive_alpha: bool = False,
+        adaptive_alpha_min_ratio: float = 0.25,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -186,6 +190,12 @@ class OTBarySLA:
             raise ValueError("attention_power must be positive")
         if not 0.0 <= attention_uniform_mix < 1.0:
             raise ValueError("attention_uniform_mix must be in [0, 1)")
+        if attention_coverage_beta < 0:
+            raise ValueError("attention_coverage_beta must be non-negative")
+        if attention_coverage_epsilon <= 0:
+            raise ValueError("attention_coverage_epsilon must be positive")
+        if not 0.0 <= adaptive_alpha_min_ratio <= 1.0:
+            raise ValueError("adaptive_alpha_min_ratio must be in [0, 1]")
 
         self.topk = topk
         self.visual_tokens = visual_tokens
@@ -202,6 +212,10 @@ class OTBarySLA:
         self.attention_power = attention_power
         self.attention_uniform_mix = attention_uniform_mix
         self.trace_attention = trace_attention
+        self.attention_coverage_beta = attention_coverage_beta
+        self.attention_coverage_epsilon = attention_coverage_epsilon
+        self.adaptive_alpha = adaptive_alpha
+        self.adaptive_alpha_min_ratio = adaptive_alpha_min_ratio
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -210,6 +224,7 @@ class OTBarySLA:
         self._stats: Dict[str, torch.Tensor] = {}
         self._stats_steps = 0
         self._attention_trace: List[Dict[str, object]] = []
+        self._attention_coverage: Optional[torch.Tensor] = None
 
     @property
     def has_visual_cache(self) -> bool:
@@ -223,6 +238,7 @@ class OTBarySLA:
         self._stats = {}
         self._stats_steps = 0
         self._attention_trace = []
+        self._attention_coverage = None
 
     @torch.no_grad()
     def cache_visual_features(self, projected_visual_tokens: TensorOrTensors) -> None:
@@ -278,6 +294,7 @@ class OTBarySLA:
         self._stats_steps = 0
         self._layer_visual_features = None
         self._attention_trace = []
+        self._attention_coverage = None
 
     @torch.no_grad()
     def cache_visual_attention_positions(self, positions: torch.Tensor) -> None:
@@ -428,6 +445,23 @@ class OTBarySLA:
 
         source = torch.stack(raw_weights, dim=1)
         source = source.clamp_min(0).pow(self.attention_power)
+        if (
+            self.attention_coverage_beta > 0
+            and self._attention_coverage is not None
+        ):
+            coverage = self._attention_coverage.to(
+                device=source.device, dtype=source.dtype,
+            )
+            coverage_total = coverage.sum(dim=-1, keepdim=True)
+            relative_coverage = torch.where(
+                coverage_total > torch.finfo(source.dtype).tiny,
+                coverage * visual_tokens / coverage_total,
+                torch.ones_like(coverage),
+            )
+            coverage_correction = (
+                relative_coverage + self.attention_coverage_epsilon
+            ).pow(-self.attention_coverage_beta)
+            source = source * coverage_correction.unsqueeze(1)
         source_total = source.sum(dim=-1, keepdim=True)
         source = torch.where(
             source_total > torch.finfo(source.dtype).tiny,
@@ -529,7 +563,7 @@ class OTBarySLA:
             return
         source = details["source_marginal"].detach().float().cpu()
         weights = details["layer_weights"].detach().float().cpu()
-        effective_source = (source * weights.unsqueeze(-1)).sum(dim=1)
+        effective_source = details["effective_source_marginal"].detach().float().cpu()
         self._attention_trace.append(
             {
                 "source_marginal": source.tolist(),
@@ -537,8 +571,44 @@ class OTBarySLA:
                 "layer_weights": weights.tolist(),
                 "layer_costs": details["layer_costs"].detach().float().cpu().tolist(),
                 "candidate_ids": details["candidate_ids"].detach().cpu().tolist(),
+                "adaptive_alpha": details["adaptive_alpha"].detach().float().cpu().tolist(),
             }
         )
+
+    def _update_attention_coverage(
+        self,
+        source_marginal: torch.Tensor,
+        layer_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        """Accumulate the layer-weighted visual marginal for future steps."""
+        effective_source = (source_marginal * layer_weights.unsqueeze(-1)).sum(dim=1)
+        if self.attention_visual_marginal:
+            if self._attention_coverage is None:
+                self._attention_coverage = torch.zeros_like(effective_source)
+            self._attention_coverage.add_(effective_source.detach())
+        return effective_source
+
+    def _effective_alpha(
+        self,
+        logits_alpha: float,
+        effective_source: torch.Tensor,
+    ) -> torch.Tensor:
+        """Reduce the OT mix when visual evidence is concentrated in few patches."""
+        alpha = torch.full(
+            (effective_source.shape[0],), logits_alpha,
+            dtype=effective_source.dtype, device=effective_source.device,
+        )
+        if not self.adaptive_alpha or effective_source.shape[-1] <= 1:
+            return alpha
+        entropy = -(
+            effective_source
+            * effective_source.clamp_min(torch.finfo(effective_source.dtype).tiny).log()
+        ).sum(dim=-1)
+        coverage_score = entropy / math.log(effective_source.shape[-1])
+        scale = self.adaptive_alpha_min_ratio + (
+            1.0 - self.adaptive_alpha_min_ratio
+        ) * coverage_score
+        return alpha * scale
 
     @torch.no_grad()
     def compute_layer_weights(
@@ -736,11 +806,23 @@ class OTBarySLA:
         augmented = (
             early_logits * layer_weights.unsqueeze(-1)
         ).sum(dim=1)
+        if self.attention_visual_marginal:
+            effective_source = self._update_attention_coverage(
+                details["source_marginal"], layer_weights,
+            )
+        else:
+            effective_source = torch.empty(
+                early_logits.shape[0], 0,
+                dtype=early_logits.dtype, device=early_logits.device,
+            )
+        effective_alpha = self._effective_alpha(logits_alpha, effective_source)
         mixed = (
-            (1.0 - logits_alpha) * final_logits
-            + logits_alpha * augmented
+            (1.0 - effective_alpha.unsqueeze(-1)) * final_logits
+            + effective_alpha.unsqueeze(-1) * augmented
         )
         details["layer_weights"] = layer_weights
         details["augmented_logits"] = augmented
+        details["effective_source_marginal"] = effective_source
+        details["adaptive_alpha"] = effective_alpha
         self._record_attention_trace(details)
         return mixed, details

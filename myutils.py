@@ -100,6 +100,35 @@ def add_ot_bary_sla_arguments(parser):
             "marginals and OT layer weights in the OT statistics JSONL."
         ),
     )
+    group.add_argument(
+        "--ot-attention-coverage-beta",
+        type=float,
+        default=0.0,
+        help=(
+            "Coverage-aware marginal strength. Positive values modestly "
+            "upweight visual patches that received less OT mass previously."
+        ),
+    )
+    group.add_argument(
+        "--ot-attention-coverage-epsilon",
+        type=float,
+        default=0.1,
+        help="Stability floor for coverage-aware visual-marginal reweighting.",
+    )
+    group.add_argument(
+        "--ot-adaptive-alpha",
+        action="store_true",
+        help=(
+            "Scale logits_alpha per decoding step using the entropy of the "
+            "effective visual OT marginal."
+        ),
+    )
+    group.add_argument(
+        "--ot-adaptive-alpha-min-ratio",
+        type=float,
+        default=0.25,
+        help="Minimum fraction of logits_alpha used by adaptive alpha.",
+    )
     return parser
 
 
@@ -122,6 +151,12 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError("--ot-attention-power must be positive")
     if not 0.0 <= args.ot_attention_uniform_mix < 1.0:
         raise ValueError("--ot-attention-uniform-mix must be in [0, 1)")
+    if args.ot_attention_coverage_beta < 0:
+        raise ValueError("--ot-attention-coverage-beta must be non-negative")
+    if args.ot_attention_coverage_epsilon <= 0:
+        raise ValueError("--ot-attention-coverage-epsilon must be positive")
+    if not 0.0 <= args.ot_adaptive_alpha_min_ratio <= 1.0:
+        raise ValueError("--ot-adaptive-alpha-min-ratio must be in [0, 1]")
     try:
         start_layer, end_layer = map(int, args.logits_layers.split(","))
     except ValueError as exc:
@@ -171,6 +206,18 @@ def prepare_common_fileparts(args):
                         f"amix{args.ot_attention_uniform_mix}",
                     ]
                 )
+                coverage_beta = getattr(args, "ot_attention_coverage_beta", 0.0)
+                if coverage_beta:
+                    file_parts.extend(
+                        [
+                            f"covbeta{coverage_beta}",
+                            f"coveps{getattr(args, 'ot_attention_coverage_epsilon', 0.1)}",
+                        ]
+                    )
+                if getattr(args, "ot_adaptive_alpha", False):
+                    file_parts.append(
+                        f"adaptamin{getattr(args, 'ot_adaptive_alpha_min_ratio', 0.25)}"
+                    )
             else:
                 file_parts.extend(
                     [

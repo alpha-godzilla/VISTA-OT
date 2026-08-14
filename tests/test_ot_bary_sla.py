@@ -358,6 +358,69 @@ class OTBarySLATests(unittest.TestCase):
             sum(trace[0]["effective_source_marginal"][0]), 1.0, places=5,
         )
 
+    def test_coverage_aware_marginal_reweights_previously_used_patches(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.0,
+            attention_coverage_beta=0.5,
+            attention_coverage_epsilon=0.1,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        method.cache_visual_attention_positions(
+            torch.tensor([[False, True, True, True, True, False]])
+        )
+        attention = torch.zeros(1, 1, 1, 6)
+        attention[..., 1] = 0.7
+        attention[..., 2] = 0.2
+        attention[..., 3] = 0.1
+        method._attention_coverage = torch.tensor([[10.0, 0.0, 0.0, 0.0]])
+
+        source = method._attention_source_marginal(
+            (attention, attention.clone()), (0, 1), batch_size=1, visual_tokens=4,
+        )
+        self.assertLess(source[0, 0, 0].item(), 0.7)
+        self.assertGreater(source[0, 0, 1].item(), 0.2)
+        torch.testing.assert_close(
+            source.sum(dim=-1), torch.ones(1, 2), atol=1e-6, rtol=1e-6,
+        )
+
+    def test_adaptive_alpha_shrinks_for_concentrated_visual_marginal(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            epsilon=0.1,
+            sinkhorn_iters=50,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.0,
+            adaptive_alpha=True,
+            adaptive_alpha_min_ratio=0.25,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        method.cache_visual_attention_positions(
+            torch.tensor([[False, True, True, True, True, False]])
+        )
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        attention = torch.zeros(1, 1, 1, 6)
+        attention[..., 1] = 0.7
+        attention[..., 2] = 0.2
+        attention[..., 3] = 0.1
+        _, details = method.aggregate(
+            self.early_logits[:1, :2],
+            torch.randn(1, 32),
+            self.embedding,
+            logits_alpha=0.3,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+        self.assertGreaterEqual(details["adaptive_alpha"].item(), 0.3 * 0.25)
+        self.assertLess(details["adaptive_alpha"].item(), 0.3)
+
     def test_attention_visual_path_never_pools_layer_tokens(self):
         method = OTBarySLA(
             topk=2,

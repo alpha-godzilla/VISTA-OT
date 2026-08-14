@@ -166,6 +166,16 @@ def add_logits_flag(model, args, tokenizer=None):
                 args, 'ot_attention_uniform_mix', 0.02,
             ),
             trace_attention=getattr(args, 'ot_attention_trace', False),
+            attention_coverage_beta=getattr(
+                args, 'ot_attention_coverage_beta', 0.0,
+            ),
+            attention_coverage_epsilon=getattr(
+                args, 'ot_attention_coverage_epsilon', 0.1,
+            ),
+            adaptive_alpha=getattr(args, 'ot_adaptive_alpha', False),
+            adaptive_alpha_min_ratio=getattr(
+                args, 'ot_adaptive_alpha_min_ratio', 0.25,
+            ),
         )
     else:
         model.ot_bary_sla = None

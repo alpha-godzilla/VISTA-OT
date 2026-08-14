@@ -144,6 +144,26 @@ means the object box receives less mass than a uniform distribution over image
 patches would assign. This diagnoses visual-mass concentration, not whether a
 caption explicitly names the object; inspect the paired generated caption too.
 
+### Coverage and adaptive-alpha ablation
+
+The coverage-aware marginal modestly downweights patches that have already
+received OT mass in earlier generation steps. Adaptive alpha scales the base
+`logits_alpha` by the entropy of the current effective visual marginal, so a
+very concentrated visual focus receives a smaller OT intervention. To isolate
+the two effects, this eight-GPU runner evaluates original VISTA, plain
+attention-OT, coverage-only, and adaptive-alpha-only variants on three paired
+seeds with the same fixed attention-OT setup:
+
+```bash
+bash run_chair_ot_attention_module_ablation.sh
+```
+
+It searches `coverage_beta={0.1,0.25,0.5}` and
+`adaptive_alpha_min_ratio={0,0.25,0.5}`, while keeping
+`logits_alpha=0.3`, `layer_temperature=0.06`, `attention_power=0.75`,
+`uniform_mix=0.02`, `topk=16`, and `epsilon=0.05`. Results are written to
+`exp_results/chair_ot_attention_module_ablation/summary.{csv,md}`.
+
 The repository's historical `25,30` setting is an inclusive six-layer range.
 The OT runner retains it so that original SLA and adaptive OT weighting differ
 only in their aggregation rule. The paper's five-layer setting can be selected
