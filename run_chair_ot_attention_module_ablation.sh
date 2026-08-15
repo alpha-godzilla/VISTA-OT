@@ -10,6 +10,7 @@ read -r -a SEEDS <<< "${SEEDS:-1994 2024 3407}"
 read -r -a COVERAGE_BETAS <<< "${COVERAGE_BETAS:-0.1 0.25 0.5}"
 read -r -a ADAPTIVE_MIN_RATIOS <<< "${ADAPTIVE_MIN_RATIOS:-0 0.25 0.5}"
 read -r -a GPUS <<< "${GPU_IDS:-0 1 2 3 4 5 6 7}"
+RUN_COVERAGE="${RUN_COVERAGE:-1}"
 
 MODEL="${MODEL:-llava-1.5}"
 SUBSET_SIZE="${SUBSET_SIZE:-500}"
@@ -47,7 +48,11 @@ if [[ -z "${VISTA_LLAVA_MODEL_PATH:-}" ]]; then
   done
 fi
 
-if (( ${#SEEDS[@]} == 0 || ${#COVERAGE_BETAS[@]} == 0 || ${#ADAPTIVE_MIN_RATIOS[@]} == 0 || ${#GPUS[@]} == 0 )); then
+if [[ "$RUN_COVERAGE" != 0 && "$RUN_COVERAGE" != 1 ]]; then
+  echo "RUN_COVERAGE must be 0 or 1." >&2
+  exit 1
+fi
+if (( ${#SEEDS[@]} == 0 || ${#ADAPTIVE_MIN_RATIOS[@]} == 0 || ${#GPUS[@]} == 0 )) || { [[ "$RUN_COVERAGE" == 1 ]] && (( ${#COVERAGE_BETAS[@]} == 0 )); }; then
   echo "SEEDS, module grids, and GPU_IDS must be non-empty." >&2
   exit 1
 fi
@@ -89,10 +94,12 @@ for seed in "${SEEDS[@]}"; do
   fi
   enqueue vista original "$seed" "$ids" "$(vista_result "$seed")"
   enqueue ot_base base "$seed" "$ids" "$(ot_result "$seed" '')"
-  for raw_beta in "${COVERAGE_BETAS[@]}"; do
-    beta="$(canonical_python_float "$raw_beta")"
-    enqueue coverage "$beta" "$seed" "$ids" "$(ot_result "$seed" "_covbeta${beta}_coveps${OT_COVERAGE_EPSILON}")"
-  done
+  if [[ "$RUN_COVERAGE" == 1 ]]; then
+    for raw_beta in "${COVERAGE_BETAS[@]}"; do
+      beta="$(canonical_python_float "$raw_beta")"
+      enqueue coverage "$beta" "$seed" "$ids" "$(ot_result "$seed" "_covbeta${beta}_coveps${OT_COVERAGE_EPSILON}")"
+    done
+  fi
   for raw_ratio in "${ADAPTIVE_MIN_RATIOS[@]}"; do
     ratio="$(canonical_python_float "$raw_ratio")"
     enqueue adaptive_alpha "$ratio" "$seed" "$ids" "$(ot_result "$seed" "_adaptamin${ratio}")"

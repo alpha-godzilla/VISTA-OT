@@ -163,6 +163,13 @@ adaptive alpha against the same original-VISTA baseline, run:
 bash run_chair_ot_attention_module_ablation.sh
 ```
 
+For the five-seed adaptive-alpha fine search, including matched fixed-alpha
+VISTA/attention-OT controls, run:
+
+```bash
+bash run_chair_ot_adaptive_alpha_refine.sh
+```
+
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
 Here gamma refers to VISTA's `--logits-alpha`. The 24 runs are distributed

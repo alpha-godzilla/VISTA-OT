@@ -164,6 +164,18 @@ It searches `coverage_beta={0.1,0.25,0.5}` and
 `uniform_mix=0.02`, `topk=16`, and `epsilon=0.05`. Results are written to
 `exp_results/chair_ot_attention_module_ablation/summary.{csv,md}`.
 
+For a five-seed adaptive-alpha refinement with fixed-alpha controls, run:
+
+```bash
+bash run_chair_ot_adaptive_alpha_refine.sh
+```
+
+It first evaluates both original VISTA and plain attention-OT at
+`logits_alpha={0.2,0.25,0.3}`, then evaluates adaptive alpha with base
+`logits_alpha=0.3` and `min_ratio={0,0.1,0.2,0.25,0.3,0.4}`. The two stages
+are saved separately so the adaptive result can be compared against a matched
+fixed-alpha control.
+
 The repository's historical `25,30` setting is an inclusive six-layer range.
 The OT runner retains it so that original SLA and adaptive OT weighting differ
 only in their aggregation rule. The paper's five-layer setting can be selected
