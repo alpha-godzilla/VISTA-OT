@@ -90,7 +90,7 @@ for seed in "${SEEDS[@]}"; do
     for raw_topk in "${RECALL_CANDIDATE_TOPKS[@]}"; do
       candidate_topk="$raw_topk"
       [[ "$candidate_topk" =~ ^[1-9][0-9]*$ ]] || { echo "RECALL_CANDIDATE_TOPKS must be positive integers." >&2; exit 1; }
-      suffix="_recalllam${lambda}_recallk${candidate_topk}_recalltemp${RECALL_TEMPERATURE}_recalldecay${RECALL_COVERAGE_DECAY}"
+      suffix="_rr${lambda}_k${candidate_topk}_t${RECALL_TEMPERATURE}_d${RECALL_COVERAGE_DECAY}"
       enqueue recall_reward "lambda${lambda}_k${candidate_topk}" "$seed" "$ids" "$(ot_result "$seed" "_adaptamin${ADAPTIVE_MIN_RATIO}" "$suffix")" "$lambda" "$candidate_topk"
     done
   done

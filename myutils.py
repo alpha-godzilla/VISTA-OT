@@ -259,10 +259,13 @@ def prepare_common_fileparts(args):
                 if recall_lambda:
                     file_parts.extend(
                         [
-                            f"recalllam{recall_lambda}",
-                            f"recallk{getattr(args, 'ot_recall_candidate_topk', 16)}",
-                            f"recalltemp{getattr(args, 'ot_recall_temperature', 0.1)}",
-                            f"recalldecay{getattr(args, 'ot_recall_coverage_decay', 1.0)}",
+                            # Keep the per-example filename below common
+                            # NAME_MAX=255 filesystem limits. The full values
+                            # also remain recorded in the sweep manifest.
+                            f"rr{recall_lambda}",
+                            f"k{getattr(args, 'ot_recall_candidate_topk', 16)}",
+                            f"t{getattr(args, 'ot_recall_temperature', 0.1)}",
+                            f"d{getattr(args, 'ot_recall_coverage_decay', 1.0)}",
                         ]
                     )
             else:
