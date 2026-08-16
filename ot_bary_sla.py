@@ -586,15 +586,21 @@ class OTBarySLA:
         reward = (reward_per_layer * layer_weights.float().unsqueeze(-1)).sum(dim=1)
 
         # A token can appear in several source top-k lists. Use max rather
-        # than accumulation so duplicated candidates are not favored.
+        # than accumulation so duplicated candidates are not favored. This
+        # deliberately avoids Tensor.scatter_reduce_, which is unavailable in
+        # older PyTorch versions used by several VISTA environments.
         vocab_reward = torch.zeros_like(final_logits, dtype=torch.float32)
-        vocab_reward.scatter_reduce_(
-            dim=-1,
-            index=candidate_ids,
-            src=reward,
-            reduce="amax",
-            include_self=True,
-        )
+        for candidate_index in range(candidate_ids.shape[1]):
+            token_ids = candidate_ids[:, candidate_index]
+            candidate_reward = reward[:, candidate_index]
+            current_reward = vocab_reward.gather(
+                dim=-1, index=token_ids.unsqueeze(-1),
+            ).squeeze(-1)
+            vocab_reward.scatter_(
+                dim=-1,
+                index=token_ids.unsqueeze(-1),
+                src=torch.maximum(current_reward, candidate_reward).unsqueeze(-1),
+            )
         return vocab_reward.to(dtype=final_logits.dtype), candidate_ids
 
     def _update_stats(
