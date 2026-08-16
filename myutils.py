@@ -129,6 +129,35 @@ def add_ot_bary_sla_arguments(parser):
         default=0.25,
         help="Minimum fraction of logits_alpha used by adaptive alpha.",
     )
+    group.add_argument(
+        "--ot-recall-reward-lambda",
+        type=float,
+        default=0.0,
+        help=(
+            "Add a token-specific reward for visually supported patches that "
+            "have received little previous attention-OT mass. Zero disables it."
+        ),
+    )
+    group.add_argument(
+        "--ot-recall-candidate-topk",
+        type=int,
+        default=16,
+        help=(
+            "Candidates per final/OT/early-logit source for the recall reward."
+        ),
+    )
+    group.add_argument(
+        "--ot-recall-temperature",
+        type=float,
+        default=0.1,
+        help="Patch-softmax temperature for token-specific recall reward.",
+    )
+    group.add_argument(
+        "--ot-recall-coverage-decay",
+        type=float,
+        default=1.0,
+        help="Decay applied to accumulated visual coverage in the recall reward.",
+    )
     return parser
 
 
@@ -157,6 +186,14 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError("--ot-attention-coverage-epsilon must be positive")
     if not 0.0 <= args.ot_adaptive_alpha_min_ratio <= 1.0:
         raise ValueError("--ot-adaptive-alpha-min-ratio must be in [0, 1]")
+    if getattr(args, "ot_recall_reward_lambda", 0.0) < 0:
+        raise ValueError("--ot-recall-reward-lambda must be non-negative")
+    if getattr(args, "ot_recall_candidate_topk", 16) <= 0:
+        raise ValueError("--ot-recall-candidate-topk must be positive")
+    if getattr(args, "ot_recall_temperature", 0.1) <= 0:
+        raise ValueError("--ot-recall-temperature must be positive")
+    if getattr(args, "ot_recall_coverage_decay", 1.0) < 0:
+        raise ValueError("--ot-recall-coverage-decay must be non-negative")
     try:
         start_layer, end_layer = map(int, args.logits_layers.split(","))
     except ValueError as exc:
@@ -217,6 +254,16 @@ def prepare_common_fileparts(args):
                 if getattr(args, "ot_adaptive_alpha", False):
                     file_parts.append(
                         f"adaptamin{getattr(args, 'ot_adaptive_alpha_min_ratio', 0.25)}"
+                    )
+                recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
+                if recall_lambda:
+                    file_parts.extend(
+                        [
+                            f"recalllam{recall_lambda}",
+                            f"recallk{getattr(args, 'ot_recall_candidate_topk', 16)}",
+                            f"recalltemp{getattr(args, 'ot_recall_temperature', 0.1)}",
+                            f"recalldecay{getattr(args, 'ot_recall_coverage_decay', 1.0)}",
+                        ]
                     )
             else:
                 file_parts.extend(

@@ -421,6 +421,46 @@ class OTBarySLATests(unittest.TestCase):
         self.assertGreaterEqual(details["adaptive_alpha"].item(), 0.3 * 0.25)
         self.assertLess(details["adaptive_alpha"].item(), 0.3)
 
+    def test_recall_reward_only_changes_candidate_union(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            epsilon=0.1,
+            sinkhorn_iters=50,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.0,
+            recall_reward_lambda=0.5,
+            recall_candidate_topk=2,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        method.cache_visual_attention_positions(
+            torch.tensor([[False, True, True, True, True, False]])
+        )
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        # Make the first patch already covered, so candidate rewards depend on
+        # the remaining visual evidence rather than a uniform initial state.
+        method._attention_coverage = torch.tensor([[5.0, 0.0, 0.0, 0.0]])
+        attention = torch.ones(1, 1, 1, 6)
+        _, details = method.aggregate(
+            self.early_logits[:1, :2],
+            torch.randn(1, 32),
+            self.embedding,
+            logits_alpha=0.3,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+
+        reward = details["recall_reward"]
+        candidates = details["recall_candidate_ids"]
+        self.assertTrue(torch.isfinite(reward).all())
+        self.assertGreater(reward.max().item(), 0.0)
+        candidate_mask = torch.zeros(32, dtype=torch.bool)
+        candidate_mask[candidates[0].unique()] = True
+        self.assertTrue(torch.all(reward[0, ~candidate_mask] == 0))
+
     def test_attention_visual_path_never_pools_layer_tokens(self):
         method = OTBarySLA(
             topk=2,

@@ -166,6 +166,10 @@ class OTBarySLA:
         attention_coverage_epsilon: float = 0.1,
         adaptive_alpha: bool = False,
         adaptive_alpha_min_ratio: float = 0.25,
+        recall_reward_lambda: float = 0.0,
+        recall_candidate_topk: int = 16,
+        recall_temperature: float = 0.1,
+        recall_coverage_decay: float = 1.0,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -196,6 +200,14 @@ class OTBarySLA:
             raise ValueError("attention_coverage_epsilon must be positive")
         if not 0.0 <= adaptive_alpha_min_ratio <= 1.0:
             raise ValueError("adaptive_alpha_min_ratio must be in [0, 1]")
+        if recall_reward_lambda < 0:
+            raise ValueError("recall_reward_lambda must be non-negative")
+        if recall_candidate_topk <= 0:
+            raise ValueError("recall_candidate_topk must be positive")
+        if recall_temperature <= 0:
+            raise ValueError("recall_temperature must be positive")
+        if recall_coverage_decay < 0:
+            raise ValueError("recall_coverage_decay must be non-negative")
 
         self.topk = topk
         self.visual_tokens = visual_tokens
@@ -216,6 +228,10 @@ class OTBarySLA:
         self.attention_coverage_epsilon = attention_coverage_epsilon
         self.adaptive_alpha = adaptive_alpha
         self.adaptive_alpha_min_ratio = adaptive_alpha_min_ratio
+        self.recall_reward_lambda = recall_reward_lambda
+        self.recall_candidate_topk = recall_candidate_topk
+        self.recall_temperature = recall_temperature
+        self.recall_coverage_decay = recall_coverage_decay
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -475,30 +491,111 @@ class OTBarySLA:
             )
         return source
 
-    def _candidate_ids(self, early_logits: torch.Tensor) -> torch.Tensor:
-        vocab_size = early_logits.shape[-1]
+    def _top_candidate_ids(
+        self,
+        logits: torch.Tensor,
+        topk: int,
+    ) -> torch.Tensor:
+        """Return valid vocabulary candidates from logits with arbitrary prefix dims."""
+        vocab_size = logits.shape[-1]
         invalid_ids = [
             token_id
             for token_id in self.special_token_ids
             if 0 <= token_id < vocab_size
         ]
-        if vocab_size - len(invalid_ids) < self.topk:
+        if vocab_size - len(invalid_ids) < topk:
             raise ValueError(
                 f"Only {vocab_size - len(invalid_ids)} valid vocabulary tokens "
-                f"remain, fewer than ot_topk={self.topk}"
+                f"remain, fewer than requested topk={topk}"
             )
 
         if invalid_ids:
-            ranked_logits = early_logits.clone()
+            ranked_logits = logits.clone()
             invalid = torch.tensor(
                 invalid_ids,
                 dtype=torch.long,
-                device=early_logits.device,
+                device=logits.device,
             )
             ranked_logits.index_fill_(-1, invalid, float("-inf"))
         else:
-            ranked_logits = early_logits
-        return ranked_logits.topk(self.topk, dim=-1).indices
+            ranked_logits = logits
+        return ranked_logits.topk(topk, dim=-1).indices
+
+    def _candidate_ids(self, early_logits: torch.Tensor) -> torch.Tensor:
+        return self._top_candidate_ids(early_logits, self.topk)
+
+    def _recall_reward(
+        self,
+        early_logits: torch.Tensor,
+        final_logits: torch.Tensor,
+        augmented_logits: torch.Tensor,
+        layer_weights: torch.Tensor,
+        output_embedding_weight: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Score candidate words supported by visual patches not yet covered.
+
+        This is intentionally separate from the OT source marginal. OT still
+        selects reliable layers from the current attention; this term only
+        reranks a bounded union of textual candidates after OT aggregation.
+        """
+        if self.recall_reward_lambda == 0 or not self.attention_visual_marginal:
+            return torch.zeros_like(final_logits), torch.empty(
+                final_logits.shape[0], 0, dtype=torch.long,
+                device=final_logits.device,
+            )
+        if output_embedding_weight is None:
+            raise RuntimeError("Recall reward requires lm_head.weight")
+        candidate_topk = self.recall_candidate_topk
+        candidate_ids = torch.cat(
+            [
+                self._top_candidate_ids(final_logits, candidate_topk),
+                self._top_candidate_ids(augmented_logits, candidate_topk),
+                self._top_candidate_ids(early_logits, candidate_topk).flatten(1),
+            ],
+            dim=1,
+        )
+        batch_size = final_logits.shape[0]
+        visual = self._expanded_layer_visual_features(batch_size).to(
+            device=final_logits.device, dtype=torch.float32,
+        )
+        token_features = _normalize(F.embedding(
+            candidate_ids, output_embedding_weight,
+        ).float())
+        similarity = torch.einsum("bwkd,bnd->bwkn", visual, token_features)
+
+        if self._attention_coverage is None:
+            uncovered = torch.ones(
+                batch_size, visual.shape[-2], dtype=torch.float32,
+                device=final_logits.device,
+            )
+        else:
+            coverage = self._attention_coverage.to(
+                device=final_logits.device, dtype=torch.float32,
+            )
+            if coverage.shape != (batch_size, visual.shape[-2]):
+                raise ValueError("Recall coverage and layer visual tokens differ")
+            uncovered = torch.exp(-self.recall_coverage_decay * coverage)
+
+        patch_distribution = torch.softmax(
+            similarity / self.recall_temperature, dim=-2,
+        )
+        visual_support = (similarity.clamp(-1.0, 1.0) + 1.0) * 0.5
+        reward_per_layer = (
+            patch_distribution * visual_support * uncovered[:, None, :, None]
+        ).sum(dim=-2)
+        reward = (reward_per_layer * layer_weights.float().unsqueeze(-1)).sum(dim=1)
+
+        # A token can appear in several source top-k lists. Use max rather
+        # than accumulation so duplicated candidates are not favored.
+        vocab_reward = torch.zeros_like(final_logits, dtype=torch.float32)
+        vocab_reward.scatter_reduce_(
+            dim=-1,
+            index=candidate_ids,
+            src=reward,
+            reduce="amax",
+            include_self=True,
+        )
+        return vocab_reward.to(dtype=final_logits.dtype), candidate_ids
 
     def _update_stats(
         self,
@@ -820,9 +917,19 @@ class OTBarySLA:
             (1.0 - effective_alpha.unsqueeze(-1)) * final_logits
             + effective_alpha.unsqueeze(-1) * augmented
         )
+        recall_reward, recall_candidate_ids = self._recall_reward(
+            early_logits=early_logits,
+            final_logits=final_logits,
+            augmented_logits=augmented,
+            layer_weights=layer_weights,
+            output_embedding_weight=output_embedding_weight,
+        )
+        mixed = mixed + self.recall_reward_lambda * recall_reward
         details["layer_weights"] = layer_weights
         details["augmented_logits"] = augmented
         details["effective_source_marginal"] = effective_source
         details["adaptive_alpha"] = effective_alpha
+        details["recall_reward"] = recall_reward
+        details["recall_candidate_ids"] = recall_candidate_ids
         self._record_attention_trace(details)
         return mixed, details

@@ -176,6 +176,12 @@ def add_logits_flag(model, args, tokenizer=None):
             adaptive_alpha_min_ratio=getattr(
                 args, 'ot_adaptive_alpha_min_ratio', 0.25,
             ),
+            recall_reward_lambda=getattr(args, 'ot_recall_reward_lambda', 0.0),
+            recall_candidate_topk=getattr(args, 'ot_recall_candidate_topk', 16),
+            recall_temperature=getattr(args, 'ot_recall_temperature', 0.1),
+            recall_coverage_decay=getattr(
+                args, 'ot_recall_coverage_decay', 1.0,
+            ),
         )
     else:
         model.ot_bary_sla = None
