@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.summarize_chair_ot_attention_grid import main
+from scripts.summarize_chair_ot_attention_modules import main as module_main
 
 
 METRICS = {
@@ -85,6 +86,59 @@ class AttentionSweepSummaryTests(unittest.TestCase):
             self.assertEqual(rows[0]["logits_alpha"], "0.5")
             self.assertAlmostEqual(float(rows[0]["delta_F1_mean"]), -0.01)
             self.assertIn("Attention power", markdown.read_text(encoding="utf-8"))
+
+    def test_module_summary_accepts_structured_recovery_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            entries = []
+            for method, setting, delta in (
+                ("vista", "original", 0.0),
+                ("recall_recovery", "rho0.25_k32", -0.01),
+                ("recall_recovery", "rho1.0_k32", 0.01),
+            ):
+                chair_path = root / f"{method}_{setting}_chair.json"
+                chair_path.write_text(
+                    json.dumps({
+                        "overall_metrics": {
+                            name: value + delta for name, value in METRICS.items()
+                        }
+                    }),
+                    encoding="utf-8",
+                )
+                entries.append({
+                    "method": method,
+                    "setting": setting,
+                    "seed": "2024",
+                    "gpu": "0",
+                    "ids_file": "ids.txt",
+                    "result_jsonl": f"{method}_{setting}.jsonl",
+                    "chair_json": str(chair_path),
+                })
+            manifest = root / "manifest.tsv"
+            with manifest.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=entries[0], delimiter="\t",
+                )
+                writer.writeheader()
+                writer.writerows(entries)
+
+            summary = root / "summary.csv"
+            markdown = root / "summary.md"
+            argv = [
+                "summarize_chair_ot_attention_modules.py",
+                "--manifest", str(manifest),
+                "--csv", str(summary),
+                "--markdown", str(markdown),
+            ]
+            with patch.object(sys, "argv", argv):
+                module_main()
+
+            with summary.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(
+                [row["setting"] for row in rows],
+                ["rho0.25_k32", "rho1.0_k32"],
+            )
 
 
 if __name__ == "__main__":

@@ -461,6 +461,55 @@ class OTBarySLATests(unittest.TestCase):
         candidate_mask[candidates[0].unique()] = True
         self.assertTrue(torch.all(reward[0, ~candidate_mask] == 0))
 
+    def test_recall_recovery_is_bounded_by_uniform_layer_reference(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            epsilon=0.1,
+            sinkhorn_iters=50,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.0,
+            adaptive_alpha=True,
+            adaptive_alpha_min_ratio=0.2,
+            recall_recovery_rho=1.0,
+            recall_candidate_topk=2,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        method.cache_visual_attention_positions(
+            torch.tensor([[False, True, True, True, True, False]])
+        )
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        method._attention_coverage = torch.tensor([[5.0, 0.0, 0.0, 0.0]])
+        attention = torch.ones(1, 1, 1, 6)
+        recovered, details = method.aggregate(
+            self.early_logits[:1, :2],
+            torch.randn(1, 32),
+            self.embedding,
+            logits_alpha=0.3,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+
+        before = details["pre_recovery_logits"]
+        reference = details["uniform_reference_logits"]
+        self.assertTrue(torch.all(recovered >= before))
+        self.assertTrue(torch.all(recovered <= torch.maximum(before, reference) + 1e-6))
+        self.assertTrue(torch.all(details["recall_recovery"] >= 0))
+        candidates = details["recall_candidate_ids"]
+        candidate_mask = torch.zeros(32, dtype=torch.bool)
+        candidate_mask[candidates[0].unique()] = True
+        torch.testing.assert_close(recovered[0, ~candidate_mask], before[0, ~candidate_mask])
+
+    def test_additive_reward_and_bounded_recovery_are_exclusive(self):
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            OTBarySLA(
+                recall_reward_lambda=0.1,
+                recall_recovery_rho=0.5,
+            )
+
     def test_attention_visual_path_never_pools_layer_tokens(self):
         method = OTBarySLA(
             topk=2,

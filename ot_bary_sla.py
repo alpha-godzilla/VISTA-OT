@@ -170,6 +170,7 @@ class OTBarySLA:
         recall_candidate_topk: int = 16,
         recall_temperature: float = 0.1,
         recall_coverage_decay: float = 1.0,
+        recall_recovery_rho: float = 0.0,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -208,6 +209,13 @@ class OTBarySLA:
             raise ValueError("recall_temperature must be positive")
         if recall_coverage_decay < 0:
             raise ValueError("recall_coverage_decay must be non-negative")
+        if not 0.0 <= recall_recovery_rho <= 1.0:
+            raise ValueError("recall_recovery_rho must be in [0, 1]")
+        if recall_reward_lambda > 0 and recall_recovery_rho > 0:
+            raise ValueError(
+                "Additive recall reward and bounded recall recovery are "
+                "mutually exclusive"
+            )
 
         self.topk = topk
         self.visual_tokens = visual_tokens
@@ -232,6 +240,7 @@ class OTBarySLA:
         self.recall_candidate_topk = recall_candidate_topk
         self.recall_temperature = recall_temperature
         self.recall_coverage_decay = recall_coverage_decay
+        self.recall_recovery_rho = recall_recovery_rho
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -531,6 +540,7 @@ class OTBarySLA:
         augmented_logits: torch.Tensor,
         layer_weights: torch.Tensor,
         output_embedding_weight: Optional[torch.Tensor],
+        previous_coverage: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Score candidate words supported by visual patches not yet covered.
 
@@ -538,7 +548,10 @@ class OTBarySLA:
         selects reliable layers from the current attention; this term only
         reranks a bounded union of textual candidates after OT aggregation.
         """
-        if self.recall_reward_lambda == 0 or not self.attention_visual_marginal:
+        recall_enabled = (
+            self.recall_reward_lambda > 0 or self.recall_recovery_rho > 0
+        )
+        if not recall_enabled or not self.attention_visual_marginal:
             return torch.zeros_like(final_logits), torch.empty(
                 final_logits.shape[0], 0, dtype=torch.long,
                 device=final_logits.device,
@@ -563,13 +576,13 @@ class OTBarySLA:
         ).float())
         similarity = torch.einsum("bwkd,bnd->bwkn", visual, token_features)
 
-        if self._attention_coverage is None:
+        if previous_coverage is None:
             uncovered = torch.ones(
                 batch_size, visual.shape[-2], dtype=torch.float32,
                 device=final_logits.device,
             )
         else:
-            coverage = self._attention_coverage.to(
+            coverage = previous_coverage.to(
                 device=final_logits.device, dtype=torch.float32,
             )
             if coverage.shape != (batch_size, visual.shape[-2]):
@@ -579,11 +592,27 @@ class OTBarySLA:
         patch_distribution = torch.softmax(
             similarity / self.recall_temperature, dim=-2,
         )
-        visual_support = (similarity.clamp(-1.0, 1.0) + 1.0) * 0.5
+        if self.recall_recovery_rho > 0:
+            # Zero cosine is neutral, not positive visual evidence. Keeping
+            # only positive similarity prevents the bounded path from acting
+            # like an unconditional interpolation back toward uniform SLA.
+            visual_support = similarity.clamp(min=0.0, max=1.0)
+        else:
+            # Preserve the original additive-reward experiment semantics.
+            visual_support = (similarity.clamp(-1.0, 1.0) + 1.0) * 0.5
         reward_per_layer = (
             patch_distribution * visual_support * uncovered[:, None, :, None]
         ).sum(dim=-2)
-        reward = (reward_per_layer * layer_weights.float().unsqueeze(-1)).sum(dim=1)
+        if self.recall_recovery_rho > 0:
+            # Recovery must provide evidence independent of the OT-selected
+            # layer distribution; otherwise the same confirmation loop that
+            # caused suppression also gates the attempted recovery. The
+            # uniform layer reference below supplies a conservative ceiling.
+            reward = reward_per_layer.mean(dim=1)
+        else:
+            reward = (
+                reward_per_layer * layer_weights.float().unsqueeze(-1)
+            ).sum(dim=1)
 
         # A token can appear in several source top-k lists. Use max rather
         # than accumulation so duplicated candidates are not favored. This
@@ -639,6 +668,29 @@ class OTBarySLA:
             for name, value in values.items():
                 self._stats[name].add_(value.detach())
         self._stats_steps += 1
+
+    def _update_recall_stats(
+        self,
+        support: torch.Tensor,
+        recovery: torch.Tensor,
+        candidate_ids: torch.Tensor,
+    ) -> None:
+        """Accumulate compact diagnostics for a recall-enabled generation."""
+        if not self.log_stats or candidate_ids.numel() == 0:
+            return
+        candidate_support = support.gather(dim=-1, index=candidate_ids)
+        values = {
+            "recall_candidate_support": candidate_support.float().mean(),
+            "recall_recovery_mass": recovery.float().sum(dim=-1).mean(),
+            "recall_recovered_token_count": (
+                recovery > 0
+            ).float().sum(dim=-1).mean(),
+        }
+        for name, value in values.items():
+            if name not in self._stats:
+                self._stats[name] = value.detach().clone()
+            else:
+                self._stats[name].add_(value.detach())
 
     def get_diagnostics(self) -> Dict[str, Union[int, float, List[float]]]:
         """Return generation-level statistics, synchronizing only once."""
@@ -909,10 +961,11 @@ class OTBarySLA:
         augmented = (
             early_logits * layer_weights.unsqueeze(-1)
         ).sum(dim=1)
+        previous_coverage = self._attention_coverage
         if self.attention_visual_marginal:
-            effective_source = self._update_attention_coverage(
-                details["source_marginal"], layer_weights,
-            )
+            effective_source = (
+                details["source_marginal"] * layer_weights.unsqueeze(-1)
+            ).sum(dim=1)
         else:
             effective_source = torch.empty(
                 early_logits.shape[0], 0,
@@ -929,13 +982,35 @@ class OTBarySLA:
             augmented_logits=augmented,
             layer_weights=layer_weights,
             output_embedding_weight=output_embedding_weight,
+            previous_coverage=previous_coverage,
         )
+        pre_recovery_logits = mixed
         mixed = mixed + self.recall_reward_lambda * recall_reward
+        uniform_augmented = early_logits.mean(dim=1)
+        uniform_reference = (
+            (1.0 - effective_alpha.unsqueeze(-1)) * final_logits
+            + effective_alpha.unsqueeze(-1) * uniform_augmented
+        )
+        suppressed_by_ot = (uniform_reference - mixed).clamp_min(0)
+        recall_recovery = recall_reward * suppressed_by_ot
+        mixed = mixed + self.recall_recovery_rho * recall_recovery
+        self._update_recall_stats(
+            recall_reward,
+            self.recall_recovery_rho * recall_recovery,
+            recall_candidate_ids,
+        )
+        if self.attention_visual_marginal:
+            self._update_attention_coverage(
+                details["source_marginal"], layer_weights,
+            )
         details["layer_weights"] = layer_weights
         details["augmented_logits"] = augmented
         details["effective_source_marginal"] = effective_source
         details["adaptive_alpha"] = effective_alpha
         details["recall_reward"] = recall_reward
         details["recall_candidate_ids"] = recall_candidate_ids
+        details["pre_recovery_logits"] = pre_recovery_logits
+        details["uniform_reference_logits"] = uniform_reference
+        details["recall_recovery"] = recall_recovery
         self._record_attention_trace(details)
         return mixed, details

@@ -182,6 +182,7 @@ def add_logits_flag(model, args, tokenizer=None):
             recall_coverage_decay=getattr(
                 args, 'ot_recall_coverage_decay', 1.0,
             ),
+            recall_recovery_rho=getattr(args, 'ot_recall_recovery_rho', 0.0),
         )
     else:
         model.ot_bary_sla = None

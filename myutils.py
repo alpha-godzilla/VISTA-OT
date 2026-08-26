@@ -158,6 +158,15 @@ def add_ot_bary_sla_arguments(parser):
         default=1.0,
         help="Decay applied to accumulated visual coverage in the recall reward.",
     )
+    group.add_argument(
+        "--ot-recall-recovery-rho",
+        type=float,
+        default=0.0,
+        help=(
+            "Boundedly restore visually supported candidates suppressed by OT "
+            "toward the same-alpha uniform-layer reference."
+        ),
+    )
     return parser
 
 
@@ -194,6 +203,14 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError("--ot-recall-temperature must be positive")
     if getattr(args, "ot_recall_coverage_decay", 1.0) < 0:
         raise ValueError("--ot-recall-coverage-decay must be non-negative")
+    recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
+    if not 0.0 <= recovery_rho <= 1.0:
+        raise ValueError("--ot-recall-recovery-rho must be in [0, 1]")
+    if getattr(args, "ot_recall_reward_lambda", 0.0) > 0 and recovery_rho > 0:
+        raise ValueError(
+            "--ot-recall-reward-lambda and --ot-recall-recovery-rho "
+            "cannot both be positive"
+        )
     try:
         start_layer, end_layer = map(int, args.logits_layers.split(","))
     except ValueError as exc:
@@ -256,13 +273,18 @@ def prepare_common_fileparts(args):
                         f"adaptamin{getattr(args, 'ot_adaptive_alpha_min_ratio', 0.25)}"
                     )
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
-                if recall_lambda:
+                recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
+                if recall_lambda or recovery_rho:
                     file_parts.extend(
                         [
                             # Keep the per-example filename below common
                             # NAME_MAX=255 filesystem limits. The full values
                             # also remain recorded in the sweep manifest.
-                            f"rr{recall_lambda}",
+                            (
+                                f"rrh{recall_lambda}"
+                                if recall_lambda
+                                else f"rc{recovery_rho}"
+                            ),
                             f"k{getattr(args, 'ot_recall_candidate_topk', 16)}",
                             f"t{getattr(args, 'ot_recall_temperature', 0.1)}",
                             f"d{getattr(args, 'ot_recall_coverage_decay', 1.0)}",

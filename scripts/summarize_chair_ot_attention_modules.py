@@ -66,7 +66,17 @@ def main():
                 aggregate[f"{prefix}{name}_mean"] = mean
                 aggregate[f"{prefix}{name}_std"] = std
         summary.append(aggregate)
-    summary.sort(key=lambda row: (row["method"], float(row["setting"]) if row["setting"] != "base" else -1))
+    def setting_sort_key(setting):
+        if setting == "base":
+            return (0, -1.0)
+        try:
+            return (0, float(setting))
+        except ValueError:
+            return (1, setting)
+
+    summary.sort(
+        key=lambda row: (row["method"], setting_sort_key(row["setting"]))
+    )
 
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     with args.csv.open("w", newline="", encoding="utf-8") as handle:
