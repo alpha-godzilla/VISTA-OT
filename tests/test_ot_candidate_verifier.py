@@ -11,6 +11,10 @@ from ot_candidate_verifier import (
     word_balanced_target_marginal,
 )
 from scripts.calibrate_apply_ot_candidate_verifier import calibrate
+from scripts.summarize_ot_local_verifier_matched_f1 import (
+    build_rows,
+    select_pair,
+)
 
 
 class CandidateExtractionTests(unittest.TestCase):
@@ -92,6 +96,43 @@ class GateCalibrationTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
         self.assertGreaterEqual(gate["calibration_metrics"]["precision"], 0.95)
         self.assertGreaterEqual(gate["calibration_metrics"]["tpr"], 0.3)
+
+
+class MatchedF1SelectionTests(unittest.TestCase):
+    @staticmethod
+    def metrics(f1, chairs):
+        return {
+            "CHAIRs": chairs, "CHAIRi": chairs / 2, "Recall": 0.5,
+            "Precision": 0.9, "F1": f1, "Len": 2.0,
+        }
+
+    def test_pair_selection_uses_calibration_seed_not_heldout_scores(self):
+        vista = {
+            0.2: {
+                1994: self.metrics(0.701, 0.16),
+                2024: self.metrics(0.80, 0.16),
+            },
+            0.3: {
+                1994: self.metrics(0.74, 0.15),
+                2024: self.metrics(0.70, 0.15),
+            },
+        }
+        ours = {
+            "gate_a": {
+                1994: self.metrics(0.700, 0.13),
+                # Deliberately bad held-out F1: this must not alter selection.
+                2024: self.metrics(0.60, 0.13),
+            },
+            "gate_b": {
+                1994: self.metrics(0.730, 0.12),
+                2024: self.metrics(0.70, 0.12),
+            },
+        }
+        rows = build_rows(vista, ours, calibration_seed=1994)
+        selected, within = select_pair(rows, tolerance=0.005)
+        self.assertTrue(within)
+        self.assertEqual(selected["ours_setting"], "gate_a")
+        self.assertEqual(selected["vista_logits_alpha"], 0.2)
 
 
 if __name__ == "__main__":

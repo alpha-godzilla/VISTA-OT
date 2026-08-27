@@ -22,6 +22,10 @@ def parse_args():
     parser.add_argument("--work-manifest", type=Path, required=True)
     parser.add_argument("--scores", type=Path, nargs="+", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--output-tag", default=None,
+        help="Filename tag for offline gate sweeps; defaults to the precision floor.",
+    )
     parser.add_argument("--output-manifest", type=Path, required=True)
     parser.add_argument("--report-json", type=Path, required=True)
     parser.add_argument("--report-markdown", type=Path, required=True)
@@ -264,9 +268,11 @@ def append_outputs(args, scores, pairs, gate):
             chosen[(int(row["seed"]), int(row["image_id"]))].append(row)
 
     outputs = {}
+    raw_tag = args.output_tag or f"p{args.precision_floor:g}_m{args.max_additions}"
+    output_tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_tag)
     for seed in args.seeds:
         base_rows = read_jsonl(pairs[seed]["ot"]["result_jsonl"])
-        output_path = args.output_dir / f"seed{seed}_ot_local_verifier.jsonl"
+        output_path = args.output_dir / f"seed{seed}_ot_local_verifier_{output_tag}.jsonl"
         with output_path.open("w", encoding="utf-8") as handle:
             for base in base_rows:
                 key = (seed, int(base["image_id"]))
@@ -297,10 +303,17 @@ def append_outputs(args, scores, pairs, gate):
 
 
 def write_manifest(args, pairs, outputs, gate):
-    setting = f"r{gate['region_topk']}_p{args.precision_floor:g}"
+    setting = (
+        f"r{gate['region_topk']}_p{args.precision_floor:g}"
+        f"_m{args.max_additions}"
+    )
     args.output_manifest.parent.mkdir(parents=True, exist_ok=True)
     with args.output_manifest.open("w", newline="", encoding="utf-8") as handle:
-        fields = ["method", "setting", "seed", "gpu", "ids_file", "result_jsonl", "chair_json"]
+        fields = [
+            "method", "setting", "seed", "gpu", "ids_file", "result_jsonl",
+            "chair_json", "gate_passed", "calibration_precision",
+            "calibration_tpr",
+        ]
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
         writer.writeheader()
         for seed in args.seeds:
@@ -313,6 +326,8 @@ def write_manifest(args, pairs, outputs, gate):
                     "gpu": -1, "ids_file": source["ids_file"],
                     "result_jsonl": source["result_jsonl"],
                     "chair_json": source["chair_json"],
+                    "gate_passed": "", "calibration_precision": "",
+                    "calibration_tpr": "",
                 })
             output = outputs[seed]
             writer.writerow({
@@ -320,6 +335,9 @@ def write_manifest(args, pairs, outputs, gate):
                 "gpu": -1, "ids_file": pairs[seed]["ot"]["ids_file"],
                 "result_jsonl": output,
                 "chair_json": output.with_name(output.stem + "_chair.json"),
+                "gate_passed": str(bool(gate["passed"])).lower(),
+                "calibration_precision": gate["calibration_metrics"]["precision"],
+                "calibration_tpr": gate["calibration_metrics"]["tpr"],
             })
 
 

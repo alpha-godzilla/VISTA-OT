@@ -184,10 +184,18 @@ from its candidate-conditioned visual attention and strict layer-hidden versus
 `lm_head` OT cost. Seed `1994` calibrates a precision-constrained gate; the
 gate is then frozen for seeds `2024` and `3407`. Accepted phrases are appended
 to the original OT caption verbatim rather than passed through free-form
-regeneration. The default go/no-go requirement is candidate precision `>=0.95`
-and end-to-end recovery TPR `>=0.30`. If it is not reached, the script stops
-after writing `verifier_report.md`; `ALLOW_FAILED_GATE=1` is available only for
-diagnostic CHAIR evaluation of the best sub-threshold gate.
+regeneration.
+
+The same command also performs a matched-F1 comparison. VISTA searches its
+original `logits_alpha={0.15,0.20,0.25,0.30,0.35}` while ours reuses the same
+GPU candidate scores and searches offline gate precision floors
+`{0.90,0.92,0.94,0.95,0.96,0.98}` with visual region top-k
+`{8,16,32}`. Pair selection uses seed `1994` only with an F1 tolerance of
+`0.005`; seeds `2024,3407` are held out and reported without retuning. The
+main outputs are `verifier_report.md` files under the `gates/` directory and
+`matched_f1.md`. A gate is explicitly marked failed when it does not reach its
+precision floor or end-to-end recovery TPR `0.30`; failed settings remain in
+the sweep for diagnosis but are not silently presented as passing settings.
 
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
