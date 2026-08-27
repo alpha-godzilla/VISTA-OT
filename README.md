@@ -170,6 +170,25 @@ VISTA/attention-OT controls, run:
 bash run_chair_ot_adaptive_alpha_refine.sh
 ```
 
+To test recall recovery without allowing a second pass to rewrite or delete
+the stage-one OT caption, run the candidate-conditioned local OT verifier:
+
+```bash
+PYTHON_BIN=/home/sun_yuxi/anaconda3/envs/vista/bin/python \
+  bash run_chair_ot_local_verifier.sh
+```
+
+It reuses the completed VISTA and `rho0.25_k32` stage-one outputs, extracts
+VISTA-only noun phrases without a COCO category list, and scores each proposal
+from its candidate-conditioned visual attention and strict layer-hidden versus
+`lm_head` OT cost. Seed `1994` calibrates a precision-constrained gate; the
+gate is then frozen for seeds `2024` and `3407`. Accepted phrases are appended
+to the original OT caption verbatim rather than passed through free-form
+regeneration. The default go/no-go requirement is candidate precision `>=0.95`
+and end-to-end recovery TPR `>=0.30`. If it is not reached, the script stops
+after writing `verifier_report.md`; `ALLOW_FAILED_GATE=1` is available only for
+diagnostic CHAIR evaluation of the best sub-threshold gate.
+
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
 Here gamma refers to VISTA's `--logits-alpha`. The 24 runs are distributed
