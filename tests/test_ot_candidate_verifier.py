@@ -1,15 +1,18 @@
 import unittest
+import re
 from unittest.mock import patch
 
 import torch
 
 from ot_candidate_verifier import (
     append_candidates,
+    candidate_token_span,
     candidate_ot_features,
     extract_noun_phrases,
     vista_only_candidates,
     word_balanced_target_marginal,
 )
+from llava.constants import IMAGE_TOKEN_INDEX
 from scripts.calibrate_apply_ot_candidate_verifier import calibrate
 from scripts.summarize_ot_local_verifier_matched_f1 import (
     build_rows,
@@ -42,6 +45,62 @@ class CandidateExtractionTests(unittest.TestCase):
         ):
             candidates = vista_only_candidates("vista", "ot")
         self.assertEqual([candidate.head for candidate in candidates], ["bicycle"])
+
+    def test_strips_attached_sentence_punctuation_before_stopword_filter(self):
+        with patch(
+            "ot_candidate_verifier._tagged_words",
+            return_value=[("foreground.", "NN")],
+        ):
+            self.assertEqual(extract_noun_phrases("ignored"), [])
+
+
+class _FakeSentencePieceTokenizer:
+    def __init__(self):
+        self.token_to_id = {}
+        self.id_to_token = {}
+
+    def _id(self, token):
+        if token not in self.token_to_id:
+            token_id = len(self.token_to_id) + 10
+            self.token_to_id[token] = token_id
+            self.id_to_token[token_id] = token
+        return self.token_to_id[token]
+
+    def __call__(self, text, add_special_tokens=False):
+        del add_special_tokens
+        pieces = []
+        pending_blank = False
+        for match in re.finditer(r"\s+|[A-Za-z0-9]+|[^\w\s]", text):
+            token = match.group()
+            if token.isspace():
+                pending_blank = True
+                continue
+            if pending_blank and token[0].isalnum():
+                token = "▁" + token
+            pending_blank = False
+            pieces.append(self._id(token))
+        return type("Encoding", (), {"input_ids": pieces})()
+
+    def decode(self, token_ids):
+        text = ""
+        for token_id in token_ids:
+            token = self.id_to_token[int(token_id)]
+            text += (" " + token[1:]) if token.startswith("▁") else token
+        return text
+
+
+class CandidateTokenSpanTests(unittest.TestCase):
+    def test_finds_bracketed_candidate_without_prefix_tokenization_assumption(self):
+        tokenizer = _FakeSentencePieceTokenizer()
+        after = " Candidate object: [ foreground ]. Check the exact object."
+        after_ids = tokenizer(after, add_special_tokens=False).input_ids
+        original = torch.tensor([1, IMAGE_TOKEN_INDEX, *after_ids])
+        start, end, candidate_ids = candidate_token_span(
+            tokenizer, original, "foreground",
+        )
+        self.assertEqual(tokenizer.decode(candidate_ids.tolist()).strip(), "foreground")
+        self.assertGreater(start, 2)
+        self.assertEqual(end, start + 1)
 
 
 class CandidateOTFeatureTests(unittest.TestCase):

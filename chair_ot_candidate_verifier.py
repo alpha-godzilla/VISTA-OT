@@ -18,7 +18,7 @@ from llava.utils import disable_torch_init
 from llm_layers import add_vsv_layers, remove_vsv_layers
 from model_loader import ModelLoader
 from ot_bary_sla import OTBarySLA
-from ot_candidate_verifier import candidate_ot_features
+from ot_candidate_verifier import candidate_ot_features, candidate_token_span
 from steering_vector import obtain_vsv
 
 
@@ -104,33 +104,6 @@ def build_query(candidate):
     )
 
 
-def candidate_token_span(tokenizer, question, original_input_ids, candidate):
-    """Locate candidate tokens before and after LLaVA image expansion."""
-    after_image = question.split("<ImageHere>", 1)[1]
-    marker = f"[ {candidate} ]"
-    marker_start = after_image.index(marker)
-    candidate_start_char = marker_start + 2
-    candidate_end_char = candidate_start_char + len(candidate)
-
-    def ids(text):
-        return tokenizer(text, add_special_tokens=False).input_ids
-
-    prefix_ids = ids(after_image[:candidate_start_char])
-    through_ids = ids(after_image[:candidate_end_char])
-    image_index = int((original_input_ids == IMAGE_TOKEN_INDEX).nonzero()[0].item())
-    after_ids = original_input_ids[image_index + 1:].tolist()
-    if after_ids[:len(prefix_ids)] != prefix_ids or after_ids[:len(through_ids)] != through_ids:
-        raise RuntimeError(
-            "Tokenizer boundary mismatch while locating candidate phrase; "
-            f"candidate={candidate!r}"
-        )
-    start = image_index + 1 + len(prefix_ids)
-    end = image_index + 1 + len(through_ids)
-    if end <= start:
-        raise RuntimeError(f"Candidate produced no tokens: {candidate!r}")
-    return start, end, original_input_ids[start:end]
-
-
 def install_visual_cache(model, args):
     if hasattr(model, "use_ot_bary_sla") or hasattr(model, "ot_bary_sla"):
         raise RuntimeError("OT state leaked from an earlier verifier forward")
@@ -155,10 +128,11 @@ def remove_visual_cache(model):
 
 def score_candidate(model_loader, template, image, row, args, layer_indices, region_topks):
     query = build_query(row["phrase"])
-    questions, kwargs = model_loader.prepare_inputs_for_model(template, [query], image)
+    _questions, kwargs = model_loader.prepare_inputs_for_model(template, [query], image)
     original_ids = kwargs["input_ids"][0]
     original_start, original_end, candidate_ids = candidate_token_span(
-        model_loader.tokenizer, questions[0], original_ids, row["phrase"],
+        model_loader.tokenizer, original_ids, row["phrase"],
+        image_token_index=IMAGE_TOKEN_INDEX,
     )
     install_visual_cache(model_loader.llm_model, args)
     try:

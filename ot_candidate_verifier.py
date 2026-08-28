@@ -19,7 +19,7 @@ from ot_bary_sla import _normalize, log_sinkhorn
 
 _GENERIC_HEAD_STOPWORDS = {
     "area", "background", "bunch", "collection", "foreground", "front",
-    "group", "image", "kind", "lot", "number", "pair", "part", "photo",
+    "group", "image", "kind", "lot", "number", "object", "pair", "part", "photo",
     "photograph", "picture", "scene", "side", "type", "view",
 }
 _DETERMINERS = {"a", "an", "another", "the", "this", "that", "these", "those"}
@@ -36,7 +36,7 @@ class CandidatePhrase:
 
 
 def _simple_lemma(word: str) -> str:
-    word = word.lower().strip("'\"")
+    word = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", word.lower())
     irregular = {
         "children": "child", "feet": "foot", "geese": "goose",
         "men": "man", "mice": "mouse", "people": "person",
@@ -94,9 +94,9 @@ def extract_noun_phrases(text: str, max_words: int = 4) -> List[CandidatePhrase]
     chunks: List[List[tuple[str, str]]] = []
     current: List[tuple[str, str]] = []
     for raw_word, tag in tagged + [(".", ".")]:
-        word = raw_word.lower()
+        word = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", raw_word.lower())
         allowed = tag.startswith("NN") or tag.startswith("JJ")
-        if allowed and re.search(r"[a-z0-9]", word):
+        if allowed and word:
             current.append((word, tag))
             continue
         if current:
@@ -180,6 +180,57 @@ def word_balanced_target_marginal(
         value = 1.0 / (len(groups) * len(group))
         marginal[group] = value
     return marginal
+
+
+def candidate_token_span(
+    tokenizer,
+    original_input_ids: torch.Tensor,
+    candidate: str,
+    image_token_index: int = -200,
+):
+    """Locate the bracketed candidate without assuming prefix-stable BPE.
+
+    SentencePiece attaches a preceding blank to the following token, so a
+    separately tokenized text prefix is not guaranteed to match the prefix of
+    the complete prompt. Search token subsequences in the already-tokenized
+    post-image prompt and use the verifier's brackets to disambiguate instead.
+    """
+    image_positions = (original_input_ids == image_token_index).nonzero()
+    if image_positions.numel() != 1:
+        raise RuntimeError("Verifier prompt must contain exactly one image token")
+    image_index = int(image_positions[0].item())
+    after_ids = original_input_ids[image_index + 1:].tolist()
+    variants = []
+    for text in (f" {candidate}", candidate):
+        token_ids = tokenizer(text, add_special_tokens=False).input_ids
+        if token_ids and token_ids not in variants:
+            variants.append(token_ids)
+    matches = []
+    for token_ids in variants:
+        width = len(token_ids)
+        for offset in range(len(after_ids) - width + 1):
+            if after_ids[offset:offset + width] == token_ids:
+                matches.append((offset, offset + width, token_ids))
+    bracketed_matches = []
+    for start, end, token_ids in matches:
+        left = tokenizer.decode(after_ids[max(0, start - 4):start])
+        right = tokenizer.decode(after_ids[end:min(len(after_ids), end + 4)])
+        if "[" in left and "]" in right:
+            bracketed_matches.append((start, end, token_ids))
+    if bracketed_matches:
+        matches = bracketed_matches
+    unique = {(start, end): token_ids for start, end, token_ids in matches}
+    if len(unique) != 1:
+        raise RuntimeError(
+            "Could not uniquely locate candidate token subsequence in verifier "
+            f"prompt; candidate={candidate!r}, matches={sorted(unique)}"
+        )
+    relative_start, relative_end = next(iter(unique))
+    start = image_index + 1 + relative_start
+    end = image_index + 1 + relative_end
+    if end <= start:
+        raise RuntimeError(f"Candidate produced no tokens: {candidate!r}")
+    return start, end, original_input_ids[start:end]
 
 
 def _transport_costs(
