@@ -1,5 +1,8 @@
 import unittest
 import re
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
@@ -18,6 +21,7 @@ from scripts.summarize_ot_local_verifier_matched_f1 import (
     build_rows,
     select_pair,
 )
+from scripts.validate_chair_output import is_valid_chair_output
 
 
 class CandidateExtractionTests(unittest.TestCase):
@@ -192,6 +196,27 @@ class MatchedF1SelectionTests(unittest.TestCase):
         self.assertTrue(within)
         self.assertEqual(selected["ours_setting"], "gate_a")
         self.assertEqual(selected["vista_logits_alpha"], 0.2)
+
+
+class ChairOutputValidationTests(unittest.TestCase):
+    def test_rejects_truncated_json_even_when_file_exists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "chair.json"
+            path.write_text('{"overall_metrics": ', encoding="utf-8")
+            self.assertFalse(is_valid_chair_output(path, expected_images=1))
+
+    def test_accepts_complete_expected_payload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "chair.json"
+            metrics = {
+                "CHAIRs": 0.1, "CHAIRi": 0.05, "Recall": 0.5,
+                "Precision": 0.9, "F1": 0.64, "Len": 2.0,
+            }
+            path.write_text(json.dumps({
+                "overall_metrics": metrics,
+                "sentences": [{"image_id": 1}],
+            }), encoding="utf-8")
+            self.assertTrue(is_valid_chair_output(path, expected_images=1))
 
 
 if __name__ == "__main__":
