@@ -34,7 +34,6 @@ OT_UNIFORM_MIX="${OT_UNIFORM_MIX:-0.02}"
 MINIMUM_TPR="${MINIMUM_TPR:-0.30}"
 MAX_ADDITIONS="${MAX_ADDITIONS:-2}"
 F1_TOLERANCE="${F1_TOLERANCE:-0.005}"
-MIN_FREE_GB="${MIN_FREE_GB:-2}"
 
 export VISTA_COCO_ROOT="${VISTA_COCO_ROOT:-/data/sun_yuxi/datasets/coco}"
 export NLTK_DATA="${NLTK_DATA:-/data/sun_yuxi/nltk_data}"
@@ -69,36 +68,13 @@ if [[ ! "$SUBSET_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   echo "SUBSET_SIZE must be a positive integer." >&2
   exit 1
 fi
-if [[ ! "$MIN_FREE_GB" =~ ^[1-9][0-9]*$ ]]; then
-  echo "MIN_FREE_GB must be a positive integer." >&2
-  exit 1
-fi
 
 mkdir -p "$SWEEP_DIR/logs" "$SWEEP_DIR/scores" "$OUTPUT_DIR"
 WORK_MANIFEST="$SWEEP_DIR/candidate_work.jsonl"
-
-require_free_space() {
-  local available_kb available_inodes required_kb
-  available_kb="$(df -Pk "$SWEEP_DIR" | awk 'NR == 2 {print $4}')"
-  available_inodes="$(df -Pi "$SWEEP_DIR" | awk 'NR == 2 {print $4}')"
-  required_kb=$((MIN_FREE_GB * 1024 * 1024))
-  if [[ -z "$available_kb" || -z "$available_inodes" ]]; then
-    echo "Could not inspect free space for $SWEEP_DIR" >&2
-    exit 1
-  fi
-  if (( available_kb < required_kb || available_inodes < 1000 )); then
-    echo "Insufficient filesystem capacity for the experiment." >&2
-    echo "Require at least ${MIN_FREE_GB} GiB and 1000 free inodes under $SWEEP_DIR." >&2
-    df -h "$SWEEP_DIR" >&2
-    df -i "$SWEEP_DIR" >&2
-    exit 1
-  fi
-}
 is_complete_chair() {
   "$PYTHON_BIN" scripts/validate_chair_output.py \
     --path "$1" --expected-images "$SUBSET_SIZE" > /dev/null 2>&1
 }
-require_free_space
 
 seed_args=()
 for seed in "${SEEDS[@]}"; do seed_args+=("$seed"); done
@@ -157,7 +133,6 @@ for raw_floor in "${OURS_PRECISION_FLOORS[@]}"; do
   while IFS=$'\t' read -r method setting seed gpu ids result chair_json gate_passed calibration_precision calibration_tpr; do
     [[ "$method" == method || "$method" != local_verifier ]] && continue
     if ! is_complete_chair "$chair_json" || [[ "$chair_json" -ot "$result" ]]; then
-      require_free_space
       "$PYTHON_BIN" chair_ans.py --cap_file "$result" \
         --coco_path "$VISTA_COCO_ROOT/annotations" \
         --cache "$VISTA_COCO_ROOT/chair.pkl" --save_path "$chair_json" \
@@ -265,7 +240,6 @@ fi
 while IFS=$'\t' read -r method seed alpha gpu ids result chair_json; do
   [[ "$method" == method ]] && continue
   if ! is_complete_chair "$chair_json" || [[ "$chair_json" -ot "$result" ]]; then
-    require_free_space
     "$PYTHON_BIN" chair_ans.py --cap_file "$result" \
       --coco_path "$VISTA_COCO_ROOT/annotations" \
       --cache "$VISTA_COCO_ROOT/chair.pkl" --save_path "$chair_json" \
