@@ -18,7 +18,11 @@ from llava.utils import disable_torch_init
 from llm_layers import add_vsv_layers, remove_vsv_layers
 from model_loader import ModelLoader
 from ot_bary_sla import OTBarySLA
-from ot_candidate_verifier import candidate_ot_features, candidate_token_span
+from ot_candidate_verifier import (
+    candidate_ot_features,
+    candidate_token_span,
+    candidate_uot_features,
+)
 from steering_vector import obtain_vsv
 
 
@@ -43,6 +47,14 @@ def parse_args():
     parser.add_argument("--ot-layer-temperature", type=float, default=0.06)
     parser.add_argument("--ot-attention-power", type=float, default=0.75)
     parser.add_argument("--ot-attention-uniform-mix", type=float, default=0.02)
+    parser.add_argument(
+        "--uot-marginal-relaxations", default="",
+        help="Comma-separated UOT marginal KL strengths; empty preserves v1 scoring.",
+    )
+    parser.add_argument(
+        "--counterfactual-noise-std", type=float, default=0.0,
+        help="Optional normalized-pixel Gaussian noise for a sequential contrast pass.",
+    )
     return parser.parse_args()
 
 
@@ -77,7 +89,7 @@ def read_existing(path, config_id):
     }
 
 
-def verifier_config_id(args, layer_indices, region_topks):
+def verifier_config_id(args, layer_indices, region_topks, uot_relaxations):
     payload = {
         "model": args.model,
         "vsv": args.vsv,
@@ -92,6 +104,10 @@ def verifier_config_id(args, layer_indices, region_topks):
         "attention_power": args.ot_attention_power,
         "uniform_mix": args.ot_attention_uniform_mix,
     }
+    # Keep the exact v1 hash so completed legacy shards remain reusable.
+    if uot_relaxations:
+        payload["uot_marginal_relaxations"] = uot_relaxations
+        payload["counterfactual_noise_std"] = args.counterfactual_noise_std
     encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:20]
 
@@ -126,7 +142,7 @@ def remove_visual_cache(model):
     del model.use_ot_bary_sla
 
 
-def score_candidate(model_loader, template, image, row, args, layer_indices, region_topks):
+def _candidate_tensors(model_loader, template, image, row, args, layer_indices):
     query = build_query(row["phrase"])
     _questions, kwargs = model_loader.prepare_inputs_for_model(template, [query], image)
     original_ids = kwargs["input_ids"][0]
@@ -165,29 +181,93 @@ def score_candidate(model_loader, template, image, row, args, layer_indices, reg
         layer_attention = torch.stack(layer_attention)
         token_features = model_loader.llm_model.lm_head.weight[candidate_ids]
         token_strings = model_loader.tokenizer.convert_ids_to_tokens(candidate_ids.tolist())
-        features = candidate_ot_features(
-            layer_visual=layer_visual,
-            layer_attention=layer_attention,
-            token_features=token_features,
-            token_strings=token_strings,
-            region_topks=region_topks,
-            attention_power=args.ot_attention_power,
-            uniform_mix=args.ot_attention_uniform_mix,
-            epsilon=args.ot_epsilon,
-            sinkhorn_iters=args.ot_sinkhorn_iters,
-            sinkhorn_tolerance=args.ot_sinkhorn_tolerance,
-            layer_temperature=args.ot_layer_temperature,
-        )
         return {
-            **row,
             "candidate_token_ids": candidate_ids.detach().cpu().tolist(),
             "candidate_tokens": token_strings,
             "visual_tokens": visual_count,
             "layers": layer_indices,
-            **features,
+            "layer_visual": layer_visual,
+            "layer_attention": layer_attention,
+            "token_features": token_features,
         }
     finally:
         remove_visual_cache(model_loader.llm_model)
+
+
+def _distorted_image(image, noise_std, work_id):
+    if noise_std <= 0:
+        return image
+    distorted = {
+        key: value.clone() if torch.is_tensor(value) else value
+        for key, value in image.items()
+    }
+    pixels = distorted["pixel_values"]
+    generator = torch.Generator(device=pixels.device)
+    generator.manual_seed(int(work_id[:16], 16) % (2**63 - 1))
+    noise = torch.randn(
+        pixels.shape, generator=generator, device=pixels.device, dtype=pixels.dtype,
+    )
+    reduce_dims = tuple(range(max(0, pixels.ndim - 2), pixels.ndim))
+    lower = pixels.amin(dim=reduce_dims, keepdim=True)
+    upper = pixels.amax(dim=reduce_dims, keepdim=True)
+    distorted["pixel_values"] = (pixels + noise_std * noise).clamp(lower, upper)
+    return distorted
+
+
+def score_candidate(
+    model_loader, template, image, row, args, layer_indices, region_topks,
+    uot_relaxations,
+):
+    clean = _candidate_tensors(
+        model_loader, template, image, row, args, layer_indices,
+    )
+    features = candidate_ot_features(
+        layer_visual=clean["layer_visual"],
+        layer_attention=clean["layer_attention"],
+        token_features=clean["token_features"],
+        token_strings=clean["candidate_tokens"],
+        region_topks=region_topks,
+        attention_power=args.ot_attention_power,
+        uniform_mix=args.ot_attention_uniform_mix,
+        epsilon=args.ot_epsilon,
+        sinkhorn_iters=args.ot_sinkhorn_iters,
+        sinkhorn_tolerance=args.ot_sinkhorn_tolerance,
+        layer_temperature=args.ot_layer_temperature,
+    )
+    result = {
+        **row,
+        "candidate_token_ids": clean["candidate_token_ids"],
+        "candidate_tokens": clean["candidate_tokens"],
+        "visual_tokens": clean["visual_tokens"],
+        "layers": clean["layers"],
+        **features,
+    }
+    if uot_relaxations:
+        uot_kwargs = {
+            "region_topks": region_topks,
+            "marginal_relaxations": uot_relaxations,
+            "attention_power": args.ot_attention_power,
+            "uniform_mix": args.ot_attention_uniform_mix,
+            "epsilon": args.ot_epsilon,
+            "sinkhorn_iters": args.ot_sinkhorn_iters,
+            "sinkhorn_tolerance": args.ot_sinkhorn_tolerance,
+        }
+        result["uot"] = candidate_uot_features(
+            clean["layer_visual"], clean["layer_attention"],
+            clean["token_features"], clean["candidate_tokens"], **uot_kwargs,
+        )
+        if args.counterfactual_noise_std > 0:
+            noisy_image = _distorted_image(
+                image, args.counterfactual_noise_std, row["work_id"],
+            )
+            noisy = _candidate_tensors(
+                model_loader, template, noisy_image, row, args, layer_indices,
+            )
+            result["uot_counterfactual"] = candidate_uot_features(
+                noisy["layer_visual"], noisy["layer_attention"],
+                noisy["token_features"], noisy["candidate_tokens"], **uot_kwargs,
+            )
+    return result
 
 
 def main():
@@ -203,8 +283,20 @@ def main():
     region_topks = [int(x) for x in args.region_topks.split(",")]
     if any(x <= 0 for x in region_topks):
         raise ValueError("region-topks must all be positive")
+    uot_relaxations = [
+        float(value) for value in args.uot_marginal_relaxations.split(",")
+        if value.strip()
+    ]
+    if any(value <= 0 for value in uot_relaxations):
+        raise ValueError("uot-marginal-relaxations must all be positive")
+    if args.counterfactual_noise_std < 0:
+        raise ValueError("counterfactual-noise-std must be non-negative")
+    if args.counterfactual_noise_std > 0 and not uot_relaxations:
+        raise ValueError("counterfactual scoring requires UOT relaxations")
 
-    config_id = verifier_config_id(args, layer_indices, region_topks)
+    config_id = verifier_config_id(
+        args, layer_indices, region_topks, uot_relaxations,
+    )
     all_rows = read_jsonl(args.work_manifest)
     assigned = [
         row for index, row in enumerate(all_rows)
@@ -262,7 +354,7 @@ def main():
                     for row in grouped[image_id]:
                         scored = score_candidate(
                             model_loader, template, image, row, args,
-                            layer_indices, region_topks,
+                            layer_indices, region_topks, uot_relaxations,
                         )
                         scored["verifier_config_id"] = config_id
                         output_handle.write(json.dumps(scored) + "\n")

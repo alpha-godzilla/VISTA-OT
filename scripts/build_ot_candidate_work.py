@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ot_candidate_verifier import vista_only_candidates
+from ot_candidate_verifier import vista_only_candidates, vista_only_candidates_v2
 
 
 def parse_args():
@@ -23,6 +23,10 @@ def parse_args():
     parser.add_argument("--ot-method", default="recall_recovery")
     parser.add_argument("--ot-setting", default="rho0.25_k32")
     parser.add_argument("--max-candidates", type=int, default=6)
+    parser.add_argument(
+        "--candidate-version", choices=("v1", "v2"), default="v1",
+        help="V2 keeps a wider exact-lemma proposal set; V1 is unchanged.",
+    )
     return parser.parse_args()
 
 
@@ -73,7 +77,12 @@ def main():
             raise ValueError(f"VISTA/OT image sets differ for seed={seed}")
         candidate_count = image_count = 0
         for image_id in vista:
-            candidates = vista_only_candidates(
+            extractor = (
+                vista_only_candidates_v2
+                if args.candidate_version == "v2"
+                else vista_only_candidates
+            )
+            candidates = extractor(
                 vista[image_id], ot[image_id], max_candidates=args.max_candidates,
             )
             image_count += bool(candidates)
@@ -99,7 +108,12 @@ def main():
     with args.output.open("w", encoding="utf-8") as handle:
         for row in output_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(json.dumps({"total_candidates": len(output_rows), "per_seed": per_seed}, indent=2))
+    print(json.dumps({
+        "candidate_version": args.candidate_version,
+        "max_candidates": args.max_candidates,
+        "total_candidates": len(output_rows),
+        "per_seed": per_seed,
+    }, indent=2))
     print(f"Wrote {args.output}")
 
 

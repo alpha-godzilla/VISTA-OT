@@ -162,6 +162,119 @@ def vista_only_candidates(
     return selected
 
 
+def vista_only_candidates_v2(
+    vista_caption: str,
+    ot_caption: str,
+    max_candidates: int = 12,
+) -> List[CandidatePhrase]:
+    """High-recall VISTA-only proposals with conservative deduplication.
+
+    The v1 extractor expands every WordNet sense of a noun.  That is useful
+    for precision, but polysemous heads (for example ``light``) can be removed
+    as already covered even when the two captions refer to different objects.
+    V2 deliberately uses only normalized phrases and exact head lemmas.  The
+    downstream visual verifier, rather than lexical synonym expansion, is
+    responsible for rejecting redundant proposals.
+    """
+    if max_candidates <= 0:
+        raise ValueError("max_candidates must be positive")
+    vista = extract_noun_phrases(vista_caption)
+    ot = extract_noun_phrases(ot_caption)
+    ot_phrases = {
+        " ".join(_simple_lemma(word) for word in candidate.phrase.split())
+        for candidate in ot
+    }
+    ot_heads = {candidate.head for candidate in ot}
+
+    selected: List[CandidatePhrase] = []
+    selected_keys = set()
+    for candidate in vista:
+        normalized_phrase = " ".join(
+            _simple_lemma(word) for word in candidate.phrase.split()
+        )
+        # Exact heads cover simple variants (car/cars); compound phrases are
+        # compared as a whole so ``traffic light`` is not collapsed to every
+        # unrelated occurrence of the polysemous head ``light``.
+        is_compound = len(normalized_phrase.split()) > 1
+        if normalized_phrase in ot_phrases:
+            continue
+        if not is_compound and candidate.head in ot_heads:
+            continue
+        key = (normalized_phrase, candidate.head)
+        if key in selected_keys:
+            continue
+        selected.append(candidate)
+        selected_keys.add(key)
+        if len(selected) >= max_candidates:
+            break
+    return selected
+
+
+def log_unbalanced_sinkhorn(
+    cost: torch.Tensor,
+    source: torch.Tensor,
+    target: torch.Tensor,
+    epsilon: float,
+    marginal_relaxation: float,
+    num_iters: int,
+    tolerance: float | None = None,
+) -> torch.Tensor:
+    """Log-domain entropic unbalanced OT without an explicit dustbin.
+
+    Both marginal KL penalties use ``marginal_relaxation``.  Unlike balanced
+    Sinkhorn, the returned plan is allowed to transport less than unit mass.
+    Convergence is checked on the dual updates because marginal residuals do
+    not vanish in an unbalanced problem.
+    """
+    if cost.ndim < 2:
+        raise ValueError("cost must have at least two dimensions")
+    if epsilon <= 0 or marginal_relaxation <= 0:
+        raise ValueError("epsilon and marginal_relaxation must be positive")
+    if num_iters <= 0:
+        raise ValueError("num_iters must be positive")
+    if tolerance is not None and tolerance <= 0:
+        raise ValueError("tolerance must be positive")
+    if source.shape[-1] != cost.shape[-2] or target.shape[-1] != cost.shape[-1]:
+        raise ValueError("marginals do not match cost dimensions")
+
+    with torch.autocast(device_type=cost.device.type, enabled=False):
+        cost = cost.float()
+        source = source.to(device=cost.device, dtype=torch.float32)
+        target = target.to(device=cost.device, dtype=torch.float32)
+        tiny = torch.finfo(torch.float32).tiny
+        log_kernel = -cost / epsilon
+        log_source = source.clamp_min(tiny).log()
+        log_target = target.clamp_min(tiny).log()
+        log_u = torch.zeros_like(log_source)
+        log_v = torch.zeros_like(log_target)
+        exponent = marginal_relaxation / (marginal_relaxation + epsilon)
+
+        for iteration in range(num_iters):
+            previous_u = log_u
+            previous_v = log_v
+            log_u = exponent * (
+                log_source
+                - torch.logsumexp(log_kernel + log_v.unsqueeze(-2), dim=-1)
+            )
+            log_v = exponent * (
+                log_target
+                - torch.logsumexp(log_kernel + log_u.unsqueeze(-1), dim=-2)
+            )
+            should_check = tolerance is not None and (
+                (iteration + 1) % 5 == 0 or iteration + 1 == num_iters
+            )
+            if should_check:
+                update = torch.maximum(
+                    (log_u - previous_u).abs().amax(),
+                    (log_v - previous_v).abs().amax(),
+                )
+                if update.item() <= tolerance:
+                    break
+        return (
+            log_kernel + log_u.unsqueeze(-1) + log_v.unsqueeze(-2)
+        ).exp()
+
+
 def word_balanced_target_marginal(
     token_strings: Sequence[str],
     device: torch.device,
@@ -364,6 +477,136 @@ def candidate_ot_features(
         "normalized_attention_entropy": float(normalized_entropy.item()),
         "regions": by_region,
     }
+
+
+def _uot_summary(
+    cost: torch.Tensor,
+    source: torch.Tensor,
+    target: torch.Tensor,
+    epsilon: float,
+    marginal_relaxation: float,
+    sinkhorn_iters: int,
+    sinkhorn_tolerance: float,
+) -> Dict[str, object]:
+    plan = log_unbalanced_sinkhorn(
+        cost,
+        source,
+        target,
+        epsilon=epsilon,
+        marginal_relaxation=marginal_relaxation,
+        num_iters=sinkhorn_iters,
+        tolerance=sinkhorn_tolerance,
+    )
+    mass = plan.sum(dim=(-2, -1))
+    normalized_cost = (plan * cost.float()).sum(dim=(-2, -1)) / mass.clamp_min(1e-12)
+    return {
+        "plan": plan,
+        "mass": mass,
+        "normalized_cost": normalized_cost,
+    }
+
+
+@torch.no_grad()
+def candidate_uot_features(
+    layer_visual: torch.Tensor,
+    layer_attention: torch.Tensor,
+    token_features: torch.Tensor,
+    token_strings: Sequence[str],
+    region_topks: Iterable[int] = (8, 16, 32),
+    marginal_relaxations: Iterable[float] = (0.1, 0.2, 0.5),
+    attention_power: float = 0.75,
+    uniform_mix: float = 0.02,
+    epsilon: float = 0.05,
+    sinkhorn_iters: int = 50,
+    sinkhorn_tolerance: float = 1e-3,
+) -> Dict[str, object]:
+    """Candidate-conditioned UOT evidence over attended visual regions.
+
+    The feature layout is ``relaxations[tau][region_topk]``.  Plans are not
+    serialized; only mass, normalized cost, hard-negative margin, and layer
+    stability statistics needed by the offline scalar verifier are retained.
+    """
+    if layer_visual.ndim != 3 or layer_attention.ndim != 3:
+        raise ValueError("Visual states and attention must both be rank 3")
+    if layer_visual.shape[:2] != (layer_attention.shape[0], layer_attention.shape[2]):
+        raise ValueError("Layer/visual dimensions do not align")
+    if token_features.ndim != 2 or token_features.shape[-1] != layer_visual.shape[-1]:
+        raise ValueError("Candidate lm-head rows do not align with visual hidden states")
+    relaxations = [float(value) for value in marginal_relaxations]
+    if not relaxations or any(value <= 0 for value in relaxations):
+        raise ValueError("marginal_relaxations must be non-empty and positive")
+    if not 0 <= uniform_mix < 1:
+        raise ValueError("uniform_mix must be in [0, 1)")
+
+    visual = _normalize(layer_visual.float())
+    tokens = _normalize(token_features.float())
+    cost = 1.0 - torch.einsum("lkd,md->lkm", visual, tokens)
+    raw = layer_attention.float().clamp_min(0).mean(dim=1)
+    powered = raw.pow(attention_power)
+    target = word_balanced_target_marginal(token_strings, cost.device)
+    global_attention = raw.mean(dim=0)
+    visual_tokens = cost.shape[-2]
+    result: Dict[str, object] = {}
+
+    for relaxation in relaxations:
+        regions: Dict[str, object] = {}
+        for raw_topk in region_topks:
+            topk = min(int(raw_topk), max(1, visual_tokens // 2))
+            positive_indices = global_attention.topk(topk).indices
+            positive_cost = cost[:, positive_indices, :]
+            positive_raw = powered[:, positive_indices]
+            positive_total = positive_raw.sum(dim=-1, keepdim=True)
+            positive_source = torch.where(
+                positive_total > torch.finfo(torch.float32).tiny,
+                positive_raw / positive_total.clamp_min(torch.finfo(torch.float32).tiny),
+                torch.full_like(positive_raw, 1.0 / topk),
+            )
+            positive_source = (
+                (1.0 - uniform_mix) * positive_source + uniform_mix / topk
+            )
+
+            # Same-image hard negative is kept as a zero-extra-forward
+            # contrast.  The optional noisy-image path is added by the GPU
+            # scorer and compared offline.
+            affinity_cost = cost.mean(dim=(0, 2)).clone()
+            affinity_cost[positive_indices] = float("inf")
+            negative_indices = affinity_cost.topk(topk, largest=False).indices
+            negative_cost = cost[:, negative_indices, :]
+            negative_source = torch.full(
+                (cost.shape[0], topk), 1.0 / topk,
+                dtype=torch.float32, device=cost.device,
+            )
+            positive = _uot_summary(
+                positive_cost, positive_source, target,
+                epsilon, relaxation, sinkhorn_iters, sinkhorn_tolerance,
+            )
+            negative = _uot_summary(
+                negative_cost, negative_source, target,
+                epsilon, relaxation, sinkhorn_iters, sinkhorn_tolerance,
+            )
+            layer_costs = positive["normalized_cost"]
+            layer_masses = positive["mass"]
+            layer_margins = negative["normalized_cost"] - layer_costs
+            regions[str(raw_topk)] = {
+                "region_topk_effective": topk,
+                "transport_mass": float(layer_masses.mean().item()),
+                "normalized_cost": float(layer_costs.mean().item()),
+                "hard_negative_mass": float(negative["mass"].mean().item()),
+                "hard_negative_normalized_cost": float(
+                    negative["normalized_cost"].mean().item()
+                ),
+                "normalized_margin": float(layer_margins.mean().item()),
+                "layer_cost_std": float(layer_costs.std(unbiased=False).item()),
+                "layer_mass_std": float(layer_masses.std(unbiased=False).item()),
+                "positive_layer_fraction": float(
+                    (layer_margins > 0).float().mean().item()
+                ),
+                "layer_transport_masses": layer_masses.cpu().tolist(),
+                "layer_normalized_costs": layer_costs.cpu().tolist(),
+                "layer_normalized_margins": layer_margins.cpu().tolist(),
+            }
+        result[f"{relaxation:g}"] = regions
+    return {"relaxations": result}
 
 
 def append_candidates(

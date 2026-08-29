@@ -199,6 +199,50 @@ the matched-F1 curve because they are valid evaluated operating points, but
 the selected row reports its pass status, calibration precision, and TPR so it
 cannot be mistaken for a setting that passed the original go/no-go criterion.
 
+The risk-controlled UOT verifier is a separate v2 experiment; it preserves the
+entire v1 pipeline and its result directories:
+
+```bash
+PYTHON_BIN=/home/sun_yuxi/anaconda3/envs/vista/bin/python \
+  bash run_chair_ot_uot_risk_control.sh
+```
+
+V2 first widens the generic noun-phrase proposal set by removing all-sense
+WordNet deduplication and increasing the per-caption cap to `12`. It then
+scores candidate-conditioned regions with dustbin-free unbalanced OT using
+marginal KL strengths `{0.1,0.2,0.5}` and region top-k `{8,16,32}`. Seed
+`1994` is deterministically split by image: one half selects the UOT
+configuration and fits a single scalar verifier, while the other half selects
+only its threshold using sentence-level added-CHAIRs risk. At most one phrase
+is appended per caption. Any image ID shared with seeds `2024,3407` is removed
+from the development split before fitting, so those seeds remain untouched
+held-out tests.
+
+The script runs two ordered ablations from the same source captions:
+
+1. `uot_crc`: clean-image UOT plus a zero-extra-forward same-image negative;
+2. `uot_contrast_crc`: a sequential Gaussian-noise counterfactual pass, which
+   approximately doubles verifier forward time without loading another model.
+
+Set `RUN_COUNTERFACTUAL=0` to run only the first stage. The UOT computation is
+tiny compared with the LLaVA forward and keeps the old `epsilon=0.05`, 50
+iterations, and `tolerance=0.001`. Main reports are written to:
+
+```text
+exp_results/chair_ot_uot_risk_control/candidate_extraction_audit.md
+exp_results/chair_ot_uot_risk_control/uot_crc/report.md
+exp_results/chair_ot_uot_risk_control/uot_crc/summary.md
+exp_results/chair_ot_uot_risk_control/uot_contrast_crc/report.md
+exp_results/chair_ot_uot_risk_control/uot_contrast_crc/summary.md
+```
+
+The report explicitly separates `Extracted true / oracle` from verifier
+acceptance. Its conformal correction controls expected added sentence-level
+CHAIR risk under exchangeability; it is not a deterministic promise that a
+finite held-out sample has exactly unchanged CHAIRs. Append-only construction
+does deterministically preserve the original OT caption and makes object
+recall non-decreasing under the fixed CHAIR parser.
+
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
 Here gamma refers to VISTA's `--logits-alpha`. The 24 runs are distributed

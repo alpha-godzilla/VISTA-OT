@@ -1,4 +1,5 @@
 import unittest
+import math
 import re
 import json
 import tempfile
@@ -11,8 +12,11 @@ from ot_candidate_verifier import (
     append_candidates,
     candidate_token_span,
     candidate_ot_features,
+    candidate_uot_features,
     extract_noun_phrases,
+    log_unbalanced_sinkhorn,
     vista_only_candidates,
+    vista_only_candidates_v2,
     word_balanced_target_marginal,
 )
 from llava.constants import IMAGE_TOKEN_INDEX
@@ -57,6 +61,16 @@ class CandidateExtractionTests(unittest.TestCase):
             return_value=[("foreground.", "NN")],
         ):
             self.assertEqual(extract_noun_phrases("ignored"), [])
+
+    def test_v2_does_not_collapse_distinct_compounds_with_same_head(self):
+        vista_tagged = [("traffic", "NN"), ("light", "NN")]
+        ot_tagged = [("desk", "NN"), ("light", "NN")]
+        with patch(
+            "ot_candidate_verifier._tagged_words",
+            side_effect=[vista_tagged, ot_tagged],
+        ):
+            candidates = vista_only_candidates_v2("vista", "ot")
+        self.assertEqual([candidate.phrase for candidate in candidates], ["traffic light"])
 
 
 class _FakeSentencePieceTokenizer:
@@ -134,6 +148,38 @@ class CandidateOTFeatureTests(unittest.TestCase):
         result = append_candidates(original, [{"phrase": "bicycle", "plural": False}])
         self.assertTrue(result.startswith(original))
         self.assertEqual(result, original + " Also visible is a bicycle.")
+
+    def test_unbalanced_transport_mass_drops_for_high_cost(self):
+        source = torch.full((1, 4), 0.25)
+        target = torch.full((1, 2), 0.5)
+        low = log_unbalanced_sinkhorn(
+            torch.zeros(1, 4, 2), source, target,
+            epsilon=0.05, marginal_relaxation=0.2, num_iters=100,
+            tolerance=1e-5,
+        )
+        high = log_unbalanced_sinkhorn(
+            torch.ones(1, 4, 2), source, target,
+            epsilon=0.05, marginal_relaxation=0.2, num_iters=100,
+            tolerance=1e-5,
+        )
+        self.assertTrue(torch.isfinite(low).all())
+        self.assertTrue(torch.isfinite(high).all())
+        self.assertGreater(low.sum().item(), high.sum().item())
+
+    def test_candidate_uot_serializes_mass_cost_and_stability(self):
+        torch.manual_seed(4)
+        result = candidate_uot_features(
+            torch.randn(3, 12, 8),
+            torch.rand(3, 2, 12) * 0.02,
+            torch.randn(2, 8),
+            ["▁traffic", "▁light"],
+            region_topks=[4], marginal_relaxations=[0.2],
+            sinkhorn_iters=20,
+        )
+        region = result["relaxations"]["0.2"]["4"]
+        self.assertGreater(region["transport_mass"], 0)
+        self.assertTrue(math.isfinite(region["normalized_cost"]))
+        self.assertEqual(len(region["layer_transport_masses"]), 3)
 
 
 class GateCalibrationTests(unittest.TestCase):
