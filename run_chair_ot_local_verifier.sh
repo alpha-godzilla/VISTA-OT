@@ -226,12 +226,14 @@ run_vista_worker() {
 }
 
 echo "VISTA matched-F1 alpha sweep: ${#VISTA_JOB_SEEDS[@]} pending jobs"
-declare -a VISTA_PIDS=()
-for ((worker=0; worker<${#GPUS[@]} && worker<${#VISTA_JOB_SEEDS[@]}; worker+=1)); do
-  run_vista_worker "$worker" & VISTA_PIDS+=("$!")
-done
 vista_failed=0
-for pid in "${VISTA_PIDS[@]}"; do wait "$pid" || vista_failed=1; done
+if (( ${#VISTA_JOB_SEEDS[@]} > 0 )); then
+  declare -a VISTA_PIDS=()
+  for ((worker=0; worker<${#GPUS[@]} && worker<${#VISTA_JOB_SEEDS[@]}; worker+=1)); do
+    run_vista_worker "$worker" & VISTA_PIDS+=("$!")
+  done
+  for pid in "${VISTA_PIDS[@]}"; do wait "$pid" || vista_failed=1; done
+fi
 if (( vista_failed != 0 )); then
   echo "VISTA alpha generation failed; see $SWEEP_DIR/logs" >&2
   exit 1
