@@ -48,11 +48,18 @@ def load_ours(paths):
             for row in csv.DictReader(handle, delimiter="\t"):
                 if row["method"] != "local_verifier":
                     continue
-                if row.get("gate_passed", "true").lower() != "true":
-                    continue
                 setting = row["setting"]
                 seed = int(row["seed"])
                 metrics = read_metrics(row["chair_json"])
+                metrics["_gate_passed"] = row.get(
+                    "gate_passed", "true",
+                ).lower() == "true"
+                metrics["_calibration_precision"] = float(
+                    row.get("calibration_precision") or "nan"
+                )
+                metrics["_calibration_tpr"] = float(
+                    row.get("calibration_tpr") or "nan"
+                )
                 existing = configs[setting].get(seed)
                 if existing is not None and existing != metrics:
                     raise ValueError(
@@ -93,6 +100,13 @@ def build_rows(vista, ours, calibration_seed):
                 "dev_vista_F1": dev_vista["F1"],
                 "dev_delta_F1": dev_ours["F1"] - dev_vista["F1"],
                 "dev_abs_F1_gap": abs(dev_ours["F1"] - dev_vista["F1"]),
+                "ours_gate_passed": dev_ours.get("_gate_passed", True),
+                "ours_calibration_precision": dev_ours.get(
+                    "_calibration_precision", float("nan"),
+                ),
+                "ours_calibration_tpr": dev_ours.get(
+                    "_calibration_tpr", float("nan"),
+                ),
             }
             for metric in METRICS:
                 row[f"dev_ours_{metric}"] = dev_ours[metric]
@@ -161,6 +175,8 @@ def main():
         "",
         f"Selected ours setting: **{selected['ours_setting']}**",
         f"Selected VISTA logits_alpha: **{selected['vista_logits_alpha']:g}**",
+        f"Selected ours gate passed original go/no-go: **{selected['ours_gate_passed']}**",
+        f"Selected ours calibration precision / end-to-end TPR: **{selected['ours_calibration_precision']:.4f} / {selected['ours_calibration_tpr']:.4f}**",
         f"Calibration F1 (ours / VISTA / gap): **{selected['dev_ours_F1']:.4f} / {selected['dev_vista_F1']:.4f} / {selected['dev_delta_F1']:+.4f}**",
         "",
         "| Held-out metric | Ours | VISTA | Paired delta (ours - VISTA) |",

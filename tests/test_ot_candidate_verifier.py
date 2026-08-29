@@ -19,6 +19,7 @@ from llava.constants import IMAGE_TOKEN_INDEX
 from scripts.calibrate_apply_ot_candidate_verifier import calibrate
 from scripts.summarize_ot_local_verifier_matched_f1 import (
     build_rows,
+    load_ours,
     select_pair,
 )
 from scripts.validate_chair_output import is_valid_chair_output
@@ -196,6 +197,27 @@ class MatchedF1SelectionTests(unittest.TestCase):
         self.assertTrue(within)
         self.assertEqual(selected["ours_setting"], "gate_a")
         self.assertEqual(selected["vista_logits_alpha"], 0.2)
+
+    def test_failed_go_no_go_gate_remains_an_evaluated_f1_point(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chair = root / "chair.json"
+            chair.write_text(json.dumps({
+                "overall_metrics": self.metrics(0.68, 0.14),
+            }), encoding="utf-8")
+            manifest = root / "manifest.tsv"
+            manifest.write_text(
+                "method\tsetting\tseed\tchair_json\tgate_passed\t"
+                "calibration_precision\tcalibration_tpr\n"
+                f"local_verifier\tr16_p0.95_m2\t1994\t{chair}\tfalse\t"
+                "0.96\t0.20\n",
+                encoding="utf-8",
+            )
+            loaded = load_ours([manifest])
+            row = loaded["r16_p0.95_m2"][1994]
+            self.assertFalse(row["_gate_passed"])
+            self.assertAlmostEqual(row["_calibration_precision"], 0.96)
+            self.assertAlmostEqual(row["_calibration_tpr"], 0.20)
 
 
 class ChairOutputValidationTests(unittest.TestCase):

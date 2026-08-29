@@ -194,8 +194,10 @@ GPU candidate scores and searches offline gate precision floors
 `0.005`; seeds `2024,3407` are held out and reported without retuning. The
 main outputs are `verifier_report.md` files under the `gates/` directory and
 `matched_f1.md`. A gate is explicitly marked failed when it does not reach its
-precision floor or end-to-end recovery TPR `0.30`; failed settings remain in
-the sweep for diagnosis but are not silently presented as passing settings.
+precision floor or end-to-end recovery TPR `0.30`. Failed settings remain in
+the matched-F1 curve because they are valid evaluated operating points, but
+the selected row reports its pass status, calibration precision, and TPR so it
+cannot be mistaken for a setting that passed the original go/no-go criterion.
 
 The CHAIR sweep defaults to gamma values `0.1 0.2 0.3 0.4`, lambda
 values `0.13 0.14 0.15 0.16 0.17 0.18`, and GPUs `0 1 2 3 4 5`.
