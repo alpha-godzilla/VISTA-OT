@@ -197,20 +197,34 @@ def _candidate_tensors(model_loader, template, image, row, args, layer_indices):
 def _distorted_image(image, noise_std, work_id):
     if noise_std <= 0:
         return image
-    distorted = {
-        key: value.clone() if torch.is_tensor(value) else value
-        for key, value in image.items()
-    }
-    pixels = distorted["pixel_values"]
-    generator = torch.Generator(device=pixels.device)
-    generator.manual_seed(int(work_id[:16], 16) % (2**63 - 1))
-    noise = torch.randn(
-        pixels.shape, generator=generator, device=pixels.device, dtype=pixels.dtype,
-    )
-    reduce_dims = tuple(range(max(0, pixels.ndim - 2), pixels.ndim))
-    lower = pixels.amin(dim=reduce_dims, keepdim=True)
-    upper = pixels.amax(dim=reduce_dims, keepdim=True)
-    distorted["pixel_values"] = (pixels + noise_std * noise).clamp(lower, upper)
+    base_seed = int(work_id[:16], 16) % (2**63 - 1)
+
+    def distort_pixels(value, offset=0):
+        """Preserve BatchFeature/DataLoader nesting around pixel tensors."""
+        if torch.is_tensor(value):
+            generator = torch.Generator(device=value.device)
+            generator.manual_seed((base_seed + offset) % (2**63 - 1))
+            noise = torch.randn(
+                value.shape, generator=generator, device=value.device,
+                dtype=value.dtype,
+            )
+            reduce_dims = tuple(range(max(0, value.ndim - 2), value.ndim))
+            lower = value.amin(dim=reduce_dims, keepdim=True)
+            upper = value.amax(dim=reduce_dims, keepdim=True)
+            return (value + noise_std * noise).clamp(lower, upper)
+        if isinstance(value, list):
+            return [distort_pixels(item, offset + index + 1)
+                    for index, item in enumerate(value)]
+        if isinstance(value, tuple):
+            return tuple(distort_pixels(item, offset + index + 1)
+                         for index, item in enumerate(value))
+        raise TypeError(
+            "pixel_values must be a tensor or a list/tuple of tensors; got "
+            f"{type(value).__name__}"
+        )
+
+    distorted = dict(image)
+    distorted["pixel_values"] = distort_pixels(image["pixel_values"])
     return distorted
 
 
