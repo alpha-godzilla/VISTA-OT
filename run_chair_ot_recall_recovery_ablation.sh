@@ -24,6 +24,7 @@ OT_LAYER_TEMPERATURE="${OT_LAYER_TEMPERATURE:-0.06}"
 OT_ATTENTION_POWER="${OT_ATTENTION_POWER:-0.75}"
 OT_UNIFORM_MIX="${OT_UNIFORM_MIX:-0.02}"
 ADAPTIVE_MIN_RATIO="${ADAPTIVE_MIN_RATIO:-0.2}"
+INCLUDE_ADAPTIVE_BASELINE="${INCLUDE_ADAPTIVE_BASELINE:-1}"
 RECALL_CANDIDATE_TOPK="${RECALL_CANDIDATE_TOPK:-32}"
 RECALL_TEMPERATURE="${RECALL_TEMPERATURE:-0.1}"
 RECALL_COVERAGE_DECAY="${RECALL_COVERAGE_DECAY:-1.0}"
@@ -51,6 +52,9 @@ if (( ${#SEEDS[@]} == 0 || ${#RECOVERY_RHOS[@]} == 0 || ${#GPUS[@]} == 0 )); the
 fi
 if [[ ! "$RECALL_CANDIDATE_TOPK" =~ ^[1-9][0-9]*$ ]]; then
   echo "RECALL_CANDIDATE_TOPK must be a positive integer." >&2; exit 1
+fi
+if [[ "$INCLUDE_ADAPTIVE_BASELINE" != 0 && "$INCLUDE_ADAPTIVE_BASELINE" != 1 ]]; then
+  echo "INCLUDE_ADAPTIVE_BASELINE must be 0 or 1." >&2; exit 1
 fi
 if [[ ! -d "$VISTA_COCO_ROOT/val2014" || ! -f "${VISTA_LLAVA_MODEL_PATH:-}/config.json" ]]; then
   echo "Set VISTA_COCO_ROOT and VISTA_LLAVA_MODEL_PATH before running." >&2; exit 1
@@ -87,7 +91,9 @@ for seed in "${SEEDS[@]}"; do
     "$PYTHON_BIN" scripts/make_chair_seed_manifest.py --data-path "$VISTA_COCO_ROOT/val2014" --seed "$seed" --subset-size "$SUBSET_SIZE" --output "$ids"
   fi
   enqueue vista original "$seed" "$ids" "$(vista_result "$seed")" 0
-  enqueue adaptive_alpha "$ADAPTIVE_MIN_RATIO" "$seed" "$ids" "$(ot_result "$seed" '')" 0
+  if [[ "$INCLUDE_ADAPTIVE_BASELINE" == 1 ]]; then
+    enqueue adaptive_alpha "$ADAPTIVE_MIN_RATIO" "$seed" "$ids" "$(ot_result "$seed" '')" 0
+  fi
   for raw_rho in "${RECOVERY_RHOS[@]}"; do
     rho="$(canonical_float "$raw_rho")"
     "$PYTHON_BIN" -c 'import sys; x=float(sys.argv[1]); assert 0 < x <= 1' "$rho" || { echo "Each RECOVERY_RHOS value must be in (0, 1]." >&2; exit 1; }

@@ -236,6 +236,23 @@ exp_results/chair_ot_uot_risk_control/uot_contrast_crc/report.md
 exp_results/chair_ot_uot_risk_control/uot_contrast_crc/summary.md
 ```
 
+For a strict sweep of VISTA/SLA's existing `--logits-alpha` intervention
+strength, calibrating UOT-CRC only on seed `1994` and reporting the final main
+table only on held-out seeds `2024,3407`, run:
+
+```bash
+PYTHON_BIN=/home/sun_yuxi/anaconda3/envs/vista/bin/python \
+bash run_chair_ot_uot_crc_alpha_heldout.sh
+```
+
+The default alpha grid is `0.15 0.20 0.25 0.30 0.35`, uses all eight GPUs,
+and disables the counterfactual branch so that it measures UOT-CRC rather than
+UOT-contrast-CRC. Each alpha is independently tuned and CRC-calibrated on the
+development seed. Absolute per-seed results are written to
+`exp_results/chair_ot_uot_crc_alpha_heldout/heldout_by_seed.csv`; held-out
+means and sample standard deviations are written to `heldout_summary.csv` and
+`heldout_summary.md`.
+
 The report explicitly separates `Extracted true / oracle` from verifier
 acceptance. Its conformal correction controls expected added sentence-level
 CHAIR risk under exchangeability; it is not a deterministic promise that a
