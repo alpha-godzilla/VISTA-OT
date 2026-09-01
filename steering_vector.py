@@ -193,6 +193,9 @@ def add_logits_flag(model, args, tokenizer=None):
             direction_aware_gating=getattr(
                 args, 'ot_direction_aware_gating', False,
             ),
+            independent_uniform_layer_weights=getattr(
+                args, 'ot_independent_uniform_layer_weights', False,
+            ),
         )
     else:
         model.ot_bary_sla = None

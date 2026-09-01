@@ -194,6 +194,14 @@ def add_ot_bary_sla_arguments(parser):
             "suppression by absence under a uniform whole-image UOT solve."
         ),
     )
+    group.add_argument(
+        "--ot-independent-uniform-layer-weights",
+        action="store_true",
+        help=(
+            "Aggregate whole-image suppression evidence with layer weights "
+            "computed from the uniform UOT plan instead of attention-UOT weights."
+        ),
+    )
     return parser
 
 
@@ -254,6 +262,14 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError(
             "--ot-direction-aware-gating requires "
             "--ot-attention-visual-marginal"
+        )
+    independent_uniform = getattr(
+        args, "ot_independent_uniform_layer_weights", False,
+    )
+    if independent_uniform and not directional:
+        raise ValueError(
+            "--ot-independent-uniform-layer-weights requires "
+            "--ot-direction-aware-gating"
         )
     if directional and (
         getattr(args, "ot_adaptive_alpha", False)
@@ -333,6 +349,10 @@ def prepare_common_fileparts(args):
                     file_parts.append("masslayer")
                 if getattr(args, "ot_direction_aware_gating", False):
                     file_parts.append("dirgate")
+                if getattr(
+                    args, "ot_independent_uniform_layer_weights", False,
+                ):
+                    file_parts.append("induni")
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
                 recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
                 if recall_lambda or recovery_rho:

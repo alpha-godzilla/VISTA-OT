@@ -79,6 +79,19 @@ class LogSinkhornTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(low).all())
         self.assertTrue(torch.isfinite(high).all())
 
+    def test_unbalanced_solver_reports_convergence(self):
+        plan, diagnostics = log_unbalanced_sinkhorn(
+            torch.full((1, 2, 4, 2), 0.25),
+            torch.full((1, 2, 4), 0.25),
+            torch.full((1, 2, 2), 0.5),
+            epsilon=0.05, marginal_relaxation=0.5,
+            num_iters=100, tolerance=1e-3,
+            return_diagnostics=True,
+        )
+        self.assertTrue(torch.isfinite(plan).all())
+        self.assertLessEqual(diagnostics["iterations"].item(), 100)
+        self.assertLessEqual(diagnostics["dual_residual"].item(), 1e-3)
+
 
 class OTBarySLATests(unittest.TestCase):
     def setUp(self):
@@ -110,6 +123,10 @@ class OTBarySLATests(unittest.TestCase):
             atol=1e-5,
             rtol=1e-5,
         )
+
+    def test_independent_uniform_weights_require_directional_mode(self):
+        with self.assertRaisesRegex(ValueError, "direction-aware gating"):
+            OTBarySLA(independent_uniform_layer_weights=True)
 
     def test_force_uniform_reproduces_original_sla(self):
         method = OTBarySLA(
@@ -209,6 +226,49 @@ class OTBarySLATests(unittest.TestCase):
         self.assertEqual(suppress[0, 1].item(), 1.0)
         self.assertAlmostEqual(mixed[0, 1].item(), -0.6, places=6)
 
+    def test_independent_uniform_weights_remove_attention_layer_bias(self):
+        common = dict(
+            topk=1,
+            visual_tokens=1,
+            attention_visual_marginal=True,
+            unbalanced=True,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+        )
+        shared = OTBarySLA(**common)
+        independent = OTBarySLA(
+            **common, independent_uniform_layer_weights=True,
+        )
+        details = {
+            "candidate_ids": torch.tensor([[[1], [1]]]),
+            "target_marginal": torch.ones(1, 2, 1),
+            "transport_plan": torch.zeros(1, 2, 1, 1),
+            # Layer zero supports the token; layer one does not.
+            "uniform_transport_plan": torch.tensor(
+                [[[[1.0]], [[0.0]]]], dtype=torch.float32,
+            ),
+            "uniform_layer_weights": torch.tensor([[0.1, 0.9]]),
+        }
+        final = torch.zeros(1, 3)
+        augmented = torch.tensor([[0.0, -2.0, 0.0]])
+        attention_weights = torch.tensor([[0.9, 0.1]])
+        mixed_shared, _, suppress_shared = shared._direction_aware_mix(
+            final, augmented, attention_weights, details, 0.3,
+        )
+        mixed_independent, _, suppress_independent = (
+            independent._direction_aware_mix(
+                final, augmented, attention_weights, details, 0.3,
+            )
+        )
+        self.assertAlmostEqual(suppress_shared[0, 1].item(), 0.1, places=6)
+        self.assertAlmostEqual(
+            suppress_independent[0, 1].item(), 0.9, places=6,
+        )
+        self.assertGreater(
+            abs(mixed_independent[0, 1].item()),
+            abs(mixed_shared[0, 1].item()),
+        )
+
     def test_direction_aware_aggregate_runs_end_to_end(self):
         method = OTBarySLA(
             topk=2,
@@ -222,6 +282,7 @@ class OTBarySLATests(unittest.TestCase):
             marginal_relaxation=0.5,
             mass_aware_layer_weights=True,
             direction_aware_gating=True,
+            independent_uniform_layer_weights=True,
             log_stats=True,
         )
         method.cache_visual_features(torch.randn(1, 4, 12))
@@ -251,6 +312,9 @@ class OTBarySLATests(unittest.TestCase):
         diagnostics = method.get_diagnostics()
         self.assertIn("mean_candidate_promotion_gate", diagnostics)
         self.assertIn("mean_uniform_transport_mass", diagnostics)
+        self.assertIn("mean_uniform_layer_weights", diagnostics)
+        self.assertIn("mean_uot_iterations", diagnostics)
+        self.assertIn("mean_uniform_uot_dual_residual", diagnostics)
 
     def test_aligned_layer_receives_highest_weight(self):
         embedding = torch.zeros(12, 4)

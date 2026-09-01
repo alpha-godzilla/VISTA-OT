@@ -152,7 +152,8 @@ def log_unbalanced_sinkhorn(
     marginal_relaxation: float,
     num_iters: int,
     tolerance: Optional[float] = None,
-) -> torch.Tensor:
+    return_diagnostics: bool = False,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
     r"""Solve reference-KL, dustbin-free UOT.
 
     The optimized objective is
@@ -205,8 +206,13 @@ def log_unbalanced_sinkhorn(
         log_u = torch.zeros_like(log_source)
         log_v = torch.zeros_like(log_target)
         exponent = marginal_relaxation / (marginal_relaxation + epsilon)
+        final_update = torch.tensor(
+            float("inf"), dtype=torch.float32, device=cost.device,
+        )
+        iterations_used = 0
 
         for iteration in range(num_iters):
+            iterations_used = iteration + 1
             previous_u = log_u
             previous_v = log_v
             log_u = exponent * (
@@ -225,16 +231,24 @@ def log_unbalanced_sinkhorn(
                 (iteration + 1) % 5 == 0 or iteration + 1 == num_iters
             )
             if should_check:
-                update = torch.maximum(
+                final_update = torch.maximum(
                     (log_u - previous_u).abs().amax(),
                     (log_v - previous_v).abs().amax(),
                 )
-                if update.item() <= tolerance:
+                if final_update.item() <= tolerance:
                     break
 
-        return (
+        plan = (
             log_kernel + log_u.unsqueeze(-1) + log_v.unsqueeze(-2)
         ).exp()
+        if not return_diagnostics:
+            return plan
+        return plan, {
+            "iterations": torch.tensor(
+                float(iterations_used), dtype=torch.float32, device=cost.device,
+            ),
+            "dual_residual": final_update,
+        }
 
 
 class OTBarySLA:
@@ -268,6 +282,7 @@ class OTBarySLA:
         marginal_relaxation: float = 0.5,
         mass_aware_layer_weights: bool = False,
         direction_aware_gating: bool = False,
+        independent_uniform_layer_weights: bool = False,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -320,6 +335,10 @@ class OTBarySLA:
             raise ValueError(
                 "Direction-aware gating requires the attention visual marginal"
             )
+        if independent_uniform_layer_weights and not direction_aware_gating:
+            raise ValueError(
+                "Independent uniform layer weights require direction-aware gating"
+            )
         if direction_aware_gating and (
             adaptive_alpha
             or recall_reward_lambda > 0
@@ -363,6 +382,7 @@ class OTBarySLA:
         self.marginal_relaxation = marginal_relaxation
         self.mass_aware_layer_weights = mass_aware_layer_weights
         self.direction_aware_gating = direction_aware_gating
+        self.independent_uniform_layer_weights = independent_uniform_layer_weights
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -857,6 +877,23 @@ class OTBarySLA:
             trace_entry["candidate_suppression_gate"] = details[
                 "suppression_gate"
             ].gather(-1, flat_candidates).detach().float().cpu().tolist()
+            trace_entry["uniform_layer_weights"] = details[
+                "uniform_layer_weights"
+            ].detach().float().cpu().tolist()
+        if "uot_iterations" in details:
+            trace_entry["uot_iterations"] = float(
+                details["uot_iterations"].detach().cpu().item()
+            )
+            trace_entry["uot_dual_residual"] = float(
+                details["uot_dual_residual"].detach().cpu().item()
+            )
+        if "uniform_uot_iterations" in details:
+            trace_entry["uniform_uot_iterations"] = float(
+                details["uniform_uot_iterations"].detach().cpu().item()
+            )
+            trace_entry["uniform_uot_dual_residual"] = float(
+                details["uniform_uot_dual_residual"].detach().cpu().item()
+            )
         self._attention_trace.append(trace_entry)
 
     def _update_attention_coverage(
@@ -1001,8 +1038,9 @@ class OTBarySLA:
             )
             target_marginal = F.softmax(candidate_logits, dim=-1)
             transport_cost = cost.clamp(0.0, 2.0) if self.unbalanced else cost
+            transport_diagnostics = None
             if self.unbalanced:
-                transport_plan = log_unbalanced_sinkhorn(
+                transport_plan, transport_diagnostics = log_unbalanced_sinkhorn(
                     transport_cost,
                     source_marginal,
                     target_marginal,
@@ -1010,6 +1048,7 @@ class OTBarySLA:
                     marginal_relaxation=self.marginal_relaxation,
                     num_iters=self.sinkhorn_iters,
                     tolerance=self.sinkhorn_tolerance,
+                    return_diagnostics=True,
                 )
             else:
                 transport_plan = log_sinkhorn(
@@ -1052,6 +1091,8 @@ class OTBarySLA:
                 layer_weights_fp32 = torch.softmax(layer_evidence, dim=-1)
 
             uniform_transport_plan = None
+            uniform_layer_weights_fp32 = None
+            uniform_transport_diagnostics = None
             if self.direction_aware_gating:
                 uniform_source = torch.full(
                     (1, 1, visual_nodes),
@@ -1059,7 +1100,10 @@ class OTBarySLA:
                     dtype=torch.float32,
                     device=cost.device,
                 )
-                uniform_transport_plan = log_unbalanced_sinkhorn(
+                (
+                    uniform_transport_plan,
+                    uniform_transport_diagnostics,
+                ) = log_unbalanced_sinkhorn(
                     transport_cost,
                     uniform_source,
                     target_marginal,
@@ -1067,7 +1111,28 @@ class OTBarySLA:
                     marginal_relaxation=self.marginal_relaxation,
                     num_iters=self.sinkhorn_iters,
                     tolerance=self.sinkhorn_tolerance,
+                    return_diagnostics=True,
                 )
+                uniform_mass = uniform_transport_plan.sum(dim=(-2, -1))
+                uniform_costs = (
+                    uniform_transport_plan * transport_cost
+                ).sum(dim=(-2, -1)) / uniform_mass.clamp_min(
+                    torch.finfo(torch.float32).tiny
+                )
+                if self.force_uniform:
+                    uniform_layer_weights_fp32 = torch.full_like(
+                        uniform_costs, 1.0 / layer_count,
+                    )
+                else:
+                    uniform_evidence = (
+                        -uniform_costs / self.layer_temperature
+                        + uniform_mass.clamp_min(
+                            torch.finfo(torch.float32).tiny
+                        ).log()
+                    )
+                    uniform_layer_weights_fp32 = torch.softmax(
+                        uniform_evidence, dim=-1,
+                    )
 
         self._update_stats(layer_costs, layer_weights_fp32, transport_plan)
         layer_weights = layer_weights_fp32.to(dtype=early_logits.dtype)
@@ -1088,6 +1153,21 @@ class OTBarySLA:
         }
         if uniform_transport_plan is not None:
             details["uniform_transport_plan"] = uniform_transport_plan
+            details["uniform_layer_weights"] = uniform_layer_weights_fp32.to(
+                dtype=early_logits.dtype,
+            )
+        if transport_diagnostics is not None:
+            details["uot_iterations"] = transport_diagnostics["iterations"]
+            details["uot_dual_residual"] = transport_diagnostics[
+                "dual_residual"
+            ]
+        if uniform_transport_diagnostics is not None:
+            details["uniform_uot_iterations"] = uniform_transport_diagnostics[
+                "iterations"
+            ]
+            details["uniform_uot_dual_residual"] = (
+                uniform_transport_diagnostics["dual_residual"]
+            )
         return layer_weights, details
 
     @staticmethod
@@ -1153,7 +1233,12 @@ class OTBarySLA:
         )
         uniform_support, _ = self._scatter_candidate_retention(
             details["candidate_ids"], uniform_retention,
-            layer_weights, final_logits.shape[-1],
+            (
+                details["uniform_layer_weights"]
+                if self.independent_uniform_layer_weights
+                else layer_weights
+            ),
+            final_logits.shape[-1],
         )
         promotion_gate = attention_support
         suppression_gate = torch.where(
@@ -1276,6 +1361,25 @@ class OTBarySLA:
         details["recall_recovery"] = recall_recovery
         details["promotion_gate"] = promotion_gate
         details["suppression_gate"] = suppression_gate
+        if self.log_stats and "uot_iterations" in details:
+            solver_values = {
+                "uot_iterations": details["uot_iterations"].float(),
+                "uot_dual_residual": details["uot_dual_residual"].float(),
+            }
+            if "uniform_uot_iterations" in details:
+                solver_values.update({
+                    "uniform_uot_iterations": details[
+                        "uniform_uot_iterations"
+                    ].float(),
+                    "uniform_uot_dual_residual": details[
+                        "uniform_uot_dual_residual"
+                    ].float(),
+                })
+            for name, value in solver_values.items():
+                if name not in self._stats:
+                    self._stats[name] = value.detach().clone()
+                else:
+                    self._stats[name].add_(value.detach())
         if self.log_stats and promotion_gate.numel():
             flat_candidates = details["candidate_ids"].flatten(1)
             direction_values = {
@@ -1288,6 +1392,9 @@ class OTBarySLA:
                 "uniform_transport_mass": details[
                     "uniform_transport_plan"
                 ].float().sum(dim=(-2, -1)).mean(),
+                "uniform_layer_weights": details[
+                    "uniform_layer_weights"
+                ].float().mean(dim=0),
             }
             for name, value in direction_values.items():
                 if name not in self._stats:
