@@ -144,6 +144,99 @@ def log_sinkhorn(
         return log_plan.exp()
 
 
+def log_unbalanced_sinkhorn(
+    cost: torch.Tensor,
+    source_marginal: torch.Tensor,
+    target_marginal: torch.Tensor,
+    epsilon: float,
+    marginal_relaxation: float,
+    num_iters: int,
+    tolerance: Optional[float] = None,
+) -> torch.Tensor:
+    r"""Solve reference-KL, dustbin-free UOT.
+
+    The optimized objective is
+
+    ``<C,P> + epsilon KL(P || a tensor-product b)``
+    ``+ rho KL(P 1 || a) + rho KL(P^T 1 || b)``.
+
+    Including ``a tensor-product b`` in the Gibbs reference is important for
+    the retention interpretation used below: for zero cost the unit-mass plan
+    ``a tensor-product b`` is a fixed point, while positive costs may discard
+    mass through the relaxed marginals.
+
+    Convergence is measured on the dual updates: unlike balanced OT, an
+    unbalanced plan is not expected to reproduce either input marginal.
+    """
+    if cost.ndim < 2:
+        raise ValueError(f"cost must have at least two dimensions; got {cost.ndim}")
+    if epsilon <= 0:
+        raise ValueError(f"epsilon must be positive; got {epsilon}")
+    if marginal_relaxation <= 0:
+        raise ValueError(
+            "marginal_relaxation must be positive; got "
+            f"{marginal_relaxation}"
+        )
+    if num_iters <= 0:
+        raise ValueError(f"num_iters must be positive; got {num_iters}")
+    if tolerance is not None and tolerance <= 0:
+        raise ValueError(f"tolerance must be positive; got {tolerance}")
+    if source_marginal.shape[-1] != cost.shape[-2]:
+        raise ValueError("source marginal size does not match the cost matrix")
+    if target_marginal.shape[-1] != cost.shape[-1]:
+        raise ValueError("target marginal size does not match the cost matrix")
+
+    with torch.autocast(device_type=cost.device.type, enabled=False):
+        cost_fp32 = cost.float()
+        source_fp32 = source_marginal.to(
+            device=cost.device, dtype=torch.float32,
+        )
+        target_fp32 = target_marginal.to(
+            device=cost.device, dtype=torch.float32,
+        )
+        tiny = torch.finfo(torch.float32).tiny
+        log_source = source_fp32.clamp_min(tiny).log()
+        log_target = target_fp32.clamp_min(tiny).log()
+        log_kernel = (
+            log_source.unsqueeze(-1)
+            + log_target.unsqueeze(-2)
+            - cost_fp32 / epsilon
+        )
+        log_u = torch.zeros_like(log_source)
+        log_v = torch.zeros_like(log_target)
+        exponent = marginal_relaxation / (marginal_relaxation + epsilon)
+
+        for iteration in range(num_iters):
+            previous_u = log_u
+            previous_v = log_v
+            log_u = exponent * (
+                log_source
+                - torch.logsumexp(
+                    log_kernel + log_v.unsqueeze(-2), dim=-1,
+                )
+            )
+            log_v = exponent * (
+                log_target
+                - torch.logsumexp(
+                    log_kernel + log_u.unsqueeze(-1), dim=-2,
+                )
+            )
+            should_check = tolerance is not None and (
+                (iteration + 1) % 5 == 0 or iteration + 1 == num_iters
+            )
+            if should_check:
+                update = torch.maximum(
+                    (log_u - previous_u).abs().amax(),
+                    (log_v - previous_v).abs().amax(),
+                )
+                if update.item() <= tolerance:
+                    break
+
+        return (
+            log_kernel + log_u.unsqueeze(-1) + log_v.unsqueeze(-2)
+        ).exp()
+
+
 class OTBarySLA:
     """Compute OMIT-style OT weights for VISTA's early-layer logits."""
 
@@ -171,6 +264,10 @@ class OTBarySLA:
         recall_temperature: float = 0.1,
         recall_coverage_decay: float = 1.0,
         recall_recovery_rho: float = 0.0,
+        unbalanced: bool = False,
+        marginal_relaxation: float = 0.5,
+        mass_aware_layer_weights: bool = False,
+        direction_aware_gating: bool = False,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -211,6 +308,27 @@ class OTBarySLA:
             raise ValueError("recall_coverage_decay must be non-negative")
         if not 0.0 <= recall_recovery_rho <= 1.0:
             raise ValueError("recall_recovery_rho must be in [0, 1]")
+        if marginal_relaxation <= 0:
+            raise ValueError("marginal_relaxation must be positive")
+        if mass_aware_layer_weights and not unbalanced:
+            raise ValueError("Mass-aware layer weights require unbalanced OT")
+        if direction_aware_gating and not mass_aware_layer_weights:
+            raise ValueError(
+                "Direction-aware gating requires mass-aware layer weights"
+            )
+        if direction_aware_gating and not attention_visual_marginal:
+            raise ValueError(
+                "Direction-aware gating requires the attention visual marginal"
+            )
+        if direction_aware_gating and (
+            adaptive_alpha
+            or recall_reward_lambda > 0
+            or recall_recovery_rho > 0
+        ):
+            raise ValueError(
+                "Direction-aware gating is a clean standalone ablation and "
+                "cannot be combined with adaptive alpha or recall recovery"
+            )
         if recall_reward_lambda > 0 and recall_recovery_rho > 0:
             raise ValueError(
                 "Additive recall reward and bounded recall recovery are "
@@ -241,6 +359,10 @@ class OTBarySLA:
         self.recall_temperature = recall_temperature
         self.recall_coverage_decay = recall_coverage_decay
         self.recall_recovery_rho = recall_recovery_rho
+        self.unbalanced = unbalanced
+        self.marginal_relaxation = marginal_relaxation
+        self.mass_aware_layer_weights = mass_aware_layer_weights
+        self.direction_aware_gating = direction_aware_gating
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -719,16 +841,23 @@ class OTBarySLA:
         source = details["source_marginal"].detach().float().cpu()
         weights = details["layer_weights"].detach().float().cpu()
         effective_source = details["effective_source_marginal"].detach().float().cpu()
-        self._attention_trace.append(
-            {
+        trace_entry = {
                 "source_marginal": source.tolist(),
                 "effective_source_marginal": effective_source.tolist(),
                 "layer_weights": weights.tolist(),
                 "layer_costs": details["layer_costs"].detach().float().cpu().tolist(),
                 "candidate_ids": details["candidate_ids"].detach().cpu().tolist(),
                 "adaptive_alpha": details["adaptive_alpha"].detach().float().cpu().tolist(),
-            }
-        )
+        }
+        if details["promotion_gate"].numel():
+            flat_candidates = details["candidate_ids"].flatten(1)
+            trace_entry["candidate_promotion_gate"] = details[
+                "promotion_gate"
+            ].gather(-1, flat_candidates).detach().float().cpu().tolist()
+            trace_entry["candidate_suppression_gate"] = details[
+                "suppression_gate"
+            ].gather(-1, flat_candidates).detach().float().cpu().tolist()
+        self._attention_trace.append(trace_entry)
 
     def _update_attention_coverage(
         self,
@@ -871,21 +1000,33 @@ class OTBarySLA:
                 index=candidate_ids,
             )
             target_marginal = F.softmax(candidate_logits, dim=-1)
-            transport_plan = log_sinkhorn(
-                cost,
-                source_marginal,
-                target_marginal,
-                epsilon=self.epsilon,
-                num_iters=self.sinkhorn_iters,
-                tolerance=self.sinkhorn_tolerance,
-            )
+            transport_cost = cost.clamp(0.0, 2.0) if self.unbalanced else cost
+            if self.unbalanced:
+                transport_plan = log_unbalanced_sinkhorn(
+                    transport_cost,
+                    source_marginal,
+                    target_marginal,
+                    epsilon=self.epsilon,
+                    marginal_relaxation=self.marginal_relaxation,
+                    num_iters=self.sinkhorn_iters,
+                    tolerance=self.sinkhorn_tolerance,
+                )
+            else:
+                transport_plan = log_sinkhorn(
+                    cost,
+                    source_marginal,
+                    target_marginal,
+                    epsilon=self.epsilon,
+                    num_iters=self.sinkhorn_iters,
+                    tolerance=self.sinkhorn_tolerance,
+                )
 
             if self.attention_visual_marginal:
                 local_plan = transport_plan
-                local_cost = cost
+                local_cost = transport_cost
             else:
                 local_plan = transport_plan[..., :-1, :]
-                local_cost = cost[..., :-1, :]
+                local_cost = transport_cost[..., :-1, :]
             # In the legacy method this normalizes away variable global-node
             # mass. Attention OT has no dustbin and its local mass is one.
             local_mass = local_plan.sum(dim=(-2, -1))
@@ -899,9 +1040,33 @@ class OTBarySLA:
                     1.0 / layer_count,
                 )
             else:
-                layer_weights_fp32 = torch.softmax(
-                    -layer_costs / self.layer_temperature,
-                    dim=-1,
+                layer_evidence = -layer_costs / self.layer_temperature
+                if self.mass_aware_layer_weights:
+                    # A low conditional cost is unreliable when UOT retains
+                    # only negligible mass. Log mass provides a dimensionless
+                    # multiplicative reliability correction; it is not
+                    # treated as a calibrated semantic probability.
+                    layer_evidence = layer_evidence + local_mass.clamp_min(
+                        torch.finfo(torch.float32).tiny
+                    ).log()
+                layer_weights_fp32 = torch.softmax(layer_evidence, dim=-1)
+
+            uniform_transport_plan = None
+            if self.direction_aware_gating:
+                uniform_source = torch.full(
+                    (1, 1, visual_nodes),
+                    1.0 / visual_nodes,
+                    dtype=torch.float32,
+                    device=cost.device,
+                )
+                uniform_transport_plan = log_unbalanced_sinkhorn(
+                    transport_cost,
+                    uniform_source,
+                    target_marginal,
+                    epsilon=self.epsilon,
+                    marginal_relaxation=self.marginal_relaxation,
+                    num_iters=self.sinkhorn_iters,
+                    tolerance=self.sinkhorn_tolerance,
                 )
 
         self._update_stats(layer_costs, layer_weights_fp32, transport_plan)
@@ -921,7 +1086,90 @@ class OTBarySLA:
             "layer_scores": -layer_costs,
             "local_transport_mass": local_mass,
         }
+        if uniform_transport_plan is not None:
+            details["uniform_transport_plan"] = uniform_transport_plan
         return layer_weights, details
+
+    @staticmethod
+    def _scatter_candidate_retention(
+        candidate_ids: torch.Tensor,
+        retention: torch.Tensor,
+        layer_weights: torch.Tensor,
+        vocab_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Aggregate per-layer candidate retention without full-vocab costs."""
+        batch_size = candidate_ids.shape[0]
+        indices = candidate_ids.reshape(batch_size, -1)
+        weighted_retention = (
+            retention.float() * layer_weights.float().unsqueeze(-1)
+        ).reshape(batch_size, -1)
+        presence_weight = layer_weights.float().unsqueeze(-1).expand_as(
+            retention
+        ).reshape(batch_size, -1)
+        numerator = torch.zeros(
+            batch_size, vocab_size, dtype=torch.float32,
+            device=candidate_ids.device,
+        )
+        denominator = torch.zeros_like(numerator)
+        numerator.scatter_add_(dim=-1, index=indices, src=weighted_retention)
+        denominator.scatter_add_(dim=-1, index=indices, src=presence_weight)
+        present = denominator > 0
+        score = torch.where(
+            present,
+            numerator / denominator.clamp_min(
+                torch.finfo(torch.float32).tiny
+            ),
+            torch.zeros_like(numerator),
+        )
+        return score.clamp(0.0, 1.0), present
+
+    def _direction_aware_mix(
+        self,
+        final_logits: torch.Tensor,
+        augmented_logits: torch.Tensor,
+        layer_weights: torch.Tensor,
+        details: Dict[str, torch.Tensor],
+        logits_alpha: float,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply separate visual gates to promotion and suppression.
+
+        Current-attention retention licenses promotion.  Whole-image uniform
+        retention protects a candidate from suppression when a matching patch
+        exists outside the current attention focus.
+        """
+        target = details["target_marginal"].float()
+        tiny = torch.finfo(torch.float32).tiny
+        attention_retention = (
+            details["transport_plan"].float().sum(dim=-2)
+            / target.clamp_min(tiny)
+        ).clamp(0.0, 1.0)
+        uniform_retention = (
+            details["uniform_transport_plan"].float().sum(dim=-2)
+            / target.clamp_min(tiny)
+        ).clamp(0.0, 1.0)
+        attention_support, present = self._scatter_candidate_retention(
+            details["candidate_ids"], attention_retention,
+            layer_weights, final_logits.shape[-1],
+        )
+        uniform_support, _ = self._scatter_candidate_retention(
+            details["candidate_ids"], uniform_retention,
+            layer_weights, final_logits.shape[-1],
+        )
+        promotion_gate = attention_support
+        suppression_gate = torch.where(
+            present, 1.0 - uniform_support, torch.zeros_like(uniform_support),
+        )
+        delta = augmented_logits.float() - final_logits.float()
+        intervention = (
+            promotion_gate * delta.clamp_min(0.0)
+            - suppression_gate * (-delta).clamp_min(0.0)
+        )
+        mixed = final_logits.float() + logits_alpha * intervention
+        return (
+            mixed.to(dtype=final_logits.dtype),
+            promotion_gate,
+            suppression_gate,
+        )
 
     @torch.no_grad()
     def aggregate(
@@ -972,10 +1220,24 @@ class OTBarySLA:
                 dtype=early_logits.dtype, device=early_logits.device,
             )
         effective_alpha = self._effective_alpha(logits_alpha, effective_source)
-        mixed = (
-            (1.0 - effective_alpha.unsqueeze(-1)) * final_logits
-            + effective_alpha.unsqueeze(-1) * augmented
+        promotion_gate = torch.empty(
+            final_logits.shape[0], 0,
+            dtype=torch.float32, device=final_logits.device,
         )
+        suppression_gate = promotion_gate
+        if self.direction_aware_gating:
+            mixed, promotion_gate, suppression_gate = self._direction_aware_mix(
+                final_logits=final_logits,
+                augmented_logits=augmented,
+                layer_weights=layer_weights,
+                details=details,
+                logits_alpha=logits_alpha,
+            )
+        else:
+            mixed = (
+                (1.0 - effective_alpha.unsqueeze(-1)) * final_logits
+                + effective_alpha.unsqueeze(-1) * augmented
+            )
         recall_reward, recall_candidate_ids = self._recall_reward(
             early_logits=early_logits,
             final_logits=final_logits,
@@ -1012,5 +1274,25 @@ class OTBarySLA:
         details["pre_recovery_logits"] = pre_recovery_logits
         details["uniform_reference_logits"] = uniform_reference
         details["recall_recovery"] = recall_recovery
+        details["promotion_gate"] = promotion_gate
+        details["suppression_gate"] = suppression_gate
+        if self.log_stats and promotion_gate.numel():
+            flat_candidates = details["candidate_ids"].flatten(1)
+            direction_values = {
+                "candidate_promotion_gate": promotion_gate.gather(
+                    -1, flat_candidates,
+                ).float().mean(),
+                "candidate_suppression_gate": suppression_gate.gather(
+                    -1, flat_candidates,
+                ).float().mean(),
+                "uniform_transport_mass": details[
+                    "uniform_transport_plan"
+                ].float().sum(dim=(-2, -1)).mean(),
+            }
+            for name, value in direction_values.items():
+                if name not in self._stats:
+                    self._stats[name] = value.detach().clone()
+                else:
+                    self._stats[name].add_(value.detach())
         self._record_attention_trace(details)
         return mixed, details

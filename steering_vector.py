@@ -183,6 +183,16 @@ def add_logits_flag(model, args, tokenizer=None):
                 args, 'ot_recall_coverage_decay', 1.0,
             ),
             recall_recovery_rho=getattr(args, 'ot_recall_recovery_rho', 0.0),
+            unbalanced=getattr(args, 'ot_unbalanced', False),
+            marginal_relaxation=getattr(
+                args, 'ot_marginal_relaxation', 0.5,
+            ),
+            mass_aware_layer_weights=getattr(
+                args, 'ot_mass_aware_layer_weights', False,
+            ),
+            direction_aware_gating=getattr(
+                args, 'ot_direction_aware_gating', False,
+            ),
         )
     else:
         model.ot_bary_sla = None

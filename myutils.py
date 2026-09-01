@@ -167,6 +167,33 @@ def add_ot_bary_sla_arguments(parser):
             "toward the same-alpha uniform-layer reference."
         ),
     )
+    group.add_argument(
+        "--ot-unbalanced",
+        action="store_true",
+        help=(
+            "Replace balanced Sinkhorn with dustbin-free UOT. This is a "
+            "seed- and label-free first-stage option."
+        ),
+    )
+    group.add_argument(
+        "--ot-marginal-relaxation",
+        type=float,
+        default=0.5,
+        help="Symmetric KL marginal penalty for first-stage UOT.",
+    )
+    group.add_argument(
+        "--ot-mass-aware-layer-weights",
+        action="store_true",
+        help="Add log transported mass to each inverse-cost layer score.",
+    )
+    group.add_argument(
+        "--ot-direction-aware-gating",
+        action="store_true",
+        help=(
+            "Gate logit promotion by current-attention UOT support and "
+            "suppression by absence under a uniform whole-image UOT solve."
+        ),
+    )
     return parser
 
 
@@ -210,6 +237,32 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError(
             "--ot-recall-reward-lambda and --ot-recall-recovery-rho "
             "cannot both be positive"
+        )
+    if getattr(args, "ot_marginal_relaxation", 0.5) <= 0:
+        raise ValueError("--ot-marginal-relaxation must be positive")
+    unbalanced = getattr(args, "ot_unbalanced", False)
+    mass_aware = getattr(args, "ot_mass_aware_layer_weights", False)
+    directional = getattr(args, "ot_direction_aware_gating", False)
+    if mass_aware and not unbalanced:
+        raise ValueError("--ot-mass-aware-layer-weights requires --ot-unbalanced")
+    if directional and not mass_aware:
+        raise ValueError(
+            "--ot-direction-aware-gating requires "
+            "--ot-mass-aware-layer-weights"
+        )
+    if directional and not args.ot_attention_visual_marginal:
+        raise ValueError(
+            "--ot-direction-aware-gating requires "
+            "--ot-attention-visual-marginal"
+        )
+    if directional and (
+        getattr(args, "ot_adaptive_alpha", False)
+        or getattr(args, "ot_recall_reward_lambda", 0.0) > 0
+        or recovery_rho > 0
+    ):
+        raise ValueError(
+            "--ot-direction-aware-gating cannot be combined with adaptive "
+            "alpha or recall-reward/recovery ablations"
         )
     try:
         start_layer, end_layer = map(int, args.logits_layers.split(","))
@@ -272,6 +325,14 @@ def prepare_common_fileparts(args):
                     file_parts.append(
                         f"adaptamin{getattr(args, 'ot_adaptive_alpha_min_ratio', 0.25)}"
                     )
+                if getattr(args, "ot_unbalanced", False):
+                    file_parts.extend(
+                        ["uot", f"mrel{args.ot_marginal_relaxation}"]
+                    )
+                if getattr(args, "ot_mass_aware_layer_weights", False):
+                    file_parts.append("masslayer")
+                if getattr(args, "ot_direction_aware_gating", False):
+                    file_parts.append("dirgate")
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
                 recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
                 if recall_lambda or recovery_rho:

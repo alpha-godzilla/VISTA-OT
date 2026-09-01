@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from ot_bary_sla import OTBarySLA, log_sinkhorn
+from ot_bary_sla import OTBarySLA, log_sinkhorn, log_unbalanced_sinkhorn
 
 
 class LogSinkhornTests(unittest.TestCase):
@@ -59,6 +59,25 @@ class LogSinkhornTests(unittest.TestCase):
         self.assertLessEqual(
             (plan.sum(dim=-2) - target).abs().max().item(), 1e-3,
         )
+
+    def test_unbalanced_transport_mass_decreases_with_cost(self):
+        source = torch.full((1, 1, 4), 0.25)
+        target = torch.full((1, 1, 2), 0.5)
+        low = log_unbalanced_sinkhorn(
+            torch.zeros(1, 1, 4, 2), source, target,
+            epsilon=0.05, marginal_relaxation=0.5,
+            num_iters=100, tolerance=1e-5,
+        )
+        high = log_unbalanced_sinkhorn(
+            torch.ones(1, 1, 4, 2), source, target,
+            epsilon=0.05, marginal_relaxation=0.5,
+            num_iters=100, tolerance=1e-5,
+        )
+        self.assertLess(high.sum().item(), low.sum().item())
+        self.assertAlmostEqual(low.sum().item(), 1.0, places=5)
+        self.assertLess(high.sum().item(), 1.0)
+        self.assertTrue(torch.isfinite(low).all())
+        self.assertTrue(torch.isfinite(high).all())
 
 
 class OTBarySLATests(unittest.TestCase):
@@ -118,6 +137,120 @@ class OTBarySLATests(unittest.TestCase):
             torch.full((2, 5), 0.2),
         )
         torch.testing.assert_close(mixed, expected, atol=1e-6, rtol=1e-6)
+
+    def test_direction_aware_mix_separates_promotion_and_suppression(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=2,
+            attention_visual_marginal=True,
+            unbalanced=True,
+            marginal_relaxation=0.5,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+        )
+        candidate_ids = torch.tensor([[[0, 1], [0, 2]]])
+        target = torch.full((1, 2, 2), 0.5)
+        # Token 0 is fully retained. Tokens 1 and 2 are weak under current
+        # attention but fully retained by the whole-image uniform reference.
+        attention_plan = torch.tensor(
+            [[[[0.5, 0.1]], [[0.5, 0.1]]]], dtype=torch.float32,
+        )
+        uniform_plan = torch.tensor(
+            [[[[0.5, 0.5]], [[0.5, 0.5]]]], dtype=torch.float32,
+        )
+        details = {
+            "candidate_ids": candidate_ids,
+            "target_marginal": target,
+            "transport_plan": attention_plan,
+            "uniform_transport_plan": uniform_plan,
+        }
+        final = torch.zeros(1, 5)
+        augmented = torch.tensor([[2.0, -2.0, -2.0, 3.0, -3.0]])
+        mixed, promote, suppress = method._direction_aware_mix(
+            final, augmented, torch.tensor([[0.5, 0.5]]), details, 0.3,
+        )
+
+        self.assertAlmostEqual(promote[0, 0].item(), 1.0)
+        self.assertAlmostEqual(promote[0, 1].item(), 0.2)
+        self.assertAlmostEqual(suppress[0, 1].item(), 0.0)
+        # A globally supported peripheral candidate is protected from the
+        # negative early-layer delta.
+        self.assertAlmostEqual(mixed[0, 1].item(), 0.0)
+        # Tokens outside the evaluated candidate union are exact final-logit
+        # fallbacks, irrespective of the augmented-logit direction.
+        self.assertAlmostEqual(mixed[0, 3].item(), 0.0)
+        self.assertAlmostEqual(mixed[0, 4].item(), 0.0)
+        self.assertLessEqual(
+            (mixed - final).abs().max().item(),
+            0.3 * (augmented - final).abs().max().item(),
+        )
+
+    def test_direction_aware_mix_suppresses_globally_unsupported_candidate(self):
+        method = OTBarySLA(
+            topk=1,
+            visual_tokens=1,
+            attention_visual_marginal=True,
+            unbalanced=True,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+        )
+        details = {
+            "candidate_ids": torch.tensor([[[1]]]),
+            "target_marginal": torch.ones(1, 1, 1),
+            "transport_plan": torch.zeros(1, 1, 1, 1),
+            "uniform_transport_plan": torch.zeros(1, 1, 1, 1),
+        }
+        final = torch.zeros(1, 3)
+        augmented = torch.tensor([[4.0, -2.0, 4.0]])
+        mixed, promote, suppress = method._direction_aware_mix(
+            final, augmented, torch.ones(1, 1), details, 0.3,
+        )
+        self.assertEqual(promote[0, 1].item(), 0.0)
+        self.assertEqual(suppress[0, 1].item(), 1.0)
+        self.assertAlmostEqual(mixed[0, 1].item(), -0.6, places=6)
+
+    def test_direction_aware_aggregate_runs_end_to_end(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=4,
+            epsilon=0.1,
+            sinkhorn_iters=50,
+            attention_visual_marginal=True,
+            attention_power=1.0,
+            attention_uniform_mix=0.02,
+            unbalanced=True,
+            marginal_relaxation=0.5,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+            log_stats=True,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        method.cache_visual_attention_positions(
+            torch.tensor([[False, True, True, True, True, False]])
+        )
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        attention = torch.ones(1, 2, 1, 6)
+        final = torch.randn(1, 32)
+        mixed, details = method.aggregate(
+            self.early_logits[:1, :2], final, self.embedding,
+            logits_alpha=0.3,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+        self.assertEqual(mixed.shape, final.shape)
+        self.assertTrue(torch.isfinite(mixed).all())
+        self.assertEqual(details["promotion_gate"].shape, final.shape)
+        self.assertEqual(details["suppression_gate"].shape, final.shape)
+        self.assertIn("uniform_transport_plan", details)
+        candidates = details["candidate_ids"].flatten().unique()
+        outside = torch.ones(32, dtype=torch.bool)
+        outside[candidates] = False
+        torch.testing.assert_close(mixed[0, outside], final[0, outside])
+        diagnostics = method.get_diagnostics()
+        self.assertIn("mean_candidate_promotion_gate", diagnostics)
+        self.assertIn("mean_uniform_transport_mass", diagnostics)
 
     def test_aligned_layer_receives_highest_weight(self):
         embedding = torch.zeros(12, 4)
