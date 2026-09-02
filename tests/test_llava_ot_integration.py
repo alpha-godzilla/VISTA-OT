@@ -275,6 +275,64 @@ class TinyLlavaIntegrationTests(unittest.TestCase):
         finally:
             remove_logits_flag(self.model)
 
+    def test_timestep_gate_applies_final_norm_to_selected_layers(self):
+        class FakeVisionTower(nn.Module):
+            def forward(self, images):
+                values = torch.arange(
+                    4 * self_hidden_size,
+                    device=images.device,
+                    dtype=images.dtype,
+                )
+                return values.reshape(1, 4, self_hidden_size).repeat(
+                    images.shape[0], 1, 1,
+                )
+
+        class CountingNorm(nn.Module):
+            def __init__(self, wrapped):
+                super().__init__()
+                self.wrapped = wrapped
+                self.calls = 0
+
+            def forward(self, hidden_states):
+                self.calls += 1
+                return self.wrapped(hidden_states)
+
+        self_hidden_size = self.model.config.hidden_size
+        self.model.model.vision_tower = FakeVisionTower()
+        self.model.model.mm_projector = nn.Identity()
+        counting_norm = CountingNorm(self.model.model.norm)
+        self.model.model.norm = counting_norm
+        args = make_args(use_ot=True, attention_visual=True)
+        args.ot_unbalanced = True
+        args.ot_marginal_relaxation = 0.7
+        args.ot_mass_aware_layer_weights = True
+        args.ot_direction_aware_gating = True
+        args.ot_independent_uniform_layer_weights = True
+        args.ot_mass_centered_direction_gating = True
+        args.ot_bidirectional_timestep_gate = True
+        args.ot_shared_candidate_set = True
+        args.ot_final_norm_alignment = True
+        add_logits_flag(self.model, args)
+        try:
+            with torch.no_grad():
+                output = self.model(
+                    input_ids=torch.tensor([[1, IMAGE_TOKEN_INDEX, 10, 11]]),
+                    images=torch.randn(1, 3, 2, 2),
+                    use_cache=True,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+            self.assertTrue(torch.isfinite(output.logits).all())
+            # One call is the standard final model norm; two additional calls
+            # align the selected layers 1 and 2 before LM-head decoding.
+            self.assertEqual(counting_norm.calls, 3)
+            candidates = self.model.ot_bary_sla._candidate_ids(
+                torch.randn(1, 2, self.model.config.vocab_size)
+            )
+            torch.testing.assert_close(candidates[:, 0], candidates[:, 1])
+        finally:
+            remove_logits_flag(self.model)
+
 
 if __name__ == "__main__":
     unittest.main()

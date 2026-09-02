@@ -91,10 +91,13 @@ class OTBaryCLICompatibilityTests(unittest.TestCase):
         args.ot_independent_uniform_layer_weights = True
         args.ot_mass_centered_direction_gating = True
         args.ot_bidirectional_timestep_gate = True
+        args.ot_shared_candidate_set = True
+        args.ot_final_norm_alignment = True
 
         actual = "_".join(myutils.prepare_common_fileparts(args))
         self.assertIn(
-            "uot_mrel0.7_masslayer_dirgate_induni_masscenter_tgate", actual,
+            "uot_mrel0.7_masslayer_dirgate_induni_masscenter_"
+            "sharedcand_fnorm_tgate", actual,
         )
 
 

@@ -106,16 +106,31 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                         raise RuntimeError(
                             "OT-BarySLA is enabled but not initialized"
                         )
+                    selected_hidden_states = [
+                        all_hidden_states[idx] for idx in tar_layers
+                    ]
+                    if self.ot_bary_sla.final_norm_alignment:
+                        # Intermediate states are not natively decoded by the
+                        # final LM head. Apply the model's final normalization
+                        # before both early-logit decoding and visual-token
+                        # cost construction so they share a decoding-aligned
+                        # representation.
+                        decoded_hidden_states = [
+                            self.model.norm(hidden)
+                            for hidden in selected_hidden_states
+                        ]
+                    else:
+                        decoded_hidden_states = selected_hidden_states
                     if attention_ot and not self.ot_bary_sla.has_layer_visual_cache:
                         self.ot_bary_sla.cache_layer_visual_features(
-                            [all_hidden_states[idx] for idx in tar_layers]
+                            decoded_hidden_states
                         )
                     # Generation only consumes the current token's logits. This
                     # avoids materializing [B, w, sequence, vocab] at prefill.
                     early_logits = torch.stack(
                         [
-                            self.lm_head(all_hidden_states[idx][:, -1, :])
-                            for idx in tar_layers
+                            self.lm_head(hidden[:, -1, :])
+                            for hidden in decoded_hidden_states
                         ],
                         dim=1,
                     )

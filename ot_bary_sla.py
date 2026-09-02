@@ -285,6 +285,8 @@ class OTBarySLA:
         independent_uniform_layer_weights: bool = False,
         mass_centered_direction_gating: bool = False,
         bidirectional_timestep_gating: bool = False,
+        shared_candidate_set: bool = False,
+        final_norm_alignment: bool = False,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -350,6 +352,14 @@ class OTBarySLA:
                 "Bidirectional timestep gating requires mass-centered "
                 "direction-aware gating"
             )
+        if bidirectional_timestep_gating and not shared_candidate_set:
+            raise ValueError(
+                "Bidirectional timestep gating requires a shared candidate set"
+            )
+        if bidirectional_timestep_gating and not final_norm_alignment:
+            raise ValueError(
+                "Bidirectional timestep gating requires final-norm alignment"
+            )
         if direction_aware_gating and (
             adaptive_alpha
             or recall_reward_lambda > 0
@@ -396,6 +406,8 @@ class OTBarySLA:
         self.independent_uniform_layer_weights = independent_uniform_layer_weights
         self.mass_centered_direction_gating = mass_centered_direction_gating
         self.bidirectional_timestep_gating = bidirectional_timestep_gating
+        self.shared_candidate_set = shared_candidate_set
+        self.final_norm_alignment = final_norm_alignment
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -686,6 +698,21 @@ class OTBarySLA:
         return ranked_logits.topk(topk, dim=-1).indices
 
     def _candidate_ids(self, early_logits: torch.Tensor) -> torch.Tensor:
+        if self.shared_candidate_set:
+            # A shared support makes conditional UOT costs comparable across
+            # layers and aligns every layer's visual evidence with its
+            # contribution to the augmented logit. Max pooled log-probability
+            # retains a token proposed strongly by any selected early layer
+            # without allowing layer-specific logit scales to dominate.
+            pooled_log_probability = F.log_softmax(
+                early_logits.float(), dim=-1,
+            ).amax(dim=1)
+            shared_ids = self._top_candidate_ids(
+                pooled_log_probability, self.topk,
+            )
+            return shared_ids.unsqueeze(1).expand(
+                -1, early_logits.shape[1], -1,
+            )
         return self._top_candidate_ids(early_logits, self.topk)
 
     def _recall_reward(
@@ -1057,6 +1084,15 @@ class OTBarySLA:
                 index=candidate_ids,
             )
             target_marginal = F.softmax(candidate_logits, dim=-1)
+            # UOT retention uses an exact column-mass / target-mass ratio.
+            # Keep every discrete target atom strictly positive even under
+            # float32 softmax underflow, then restore unit total mass.
+            target_marginal = target_marginal.clamp_min(
+                torch.finfo(torch.float32).tiny
+            )
+            target_marginal = target_marginal / target_marginal.sum(
+                dim=-1, keepdim=True,
+            )
             transport_cost = cost.clamp(0.0, 2.0) if self.unbalanced else cost
             transport_diagnostics = None
             if self.unbalanced:
@@ -1241,12 +1277,12 @@ class OTBarySLA:
         tiny = torch.finfo(torch.float32).tiny
         attention_retention = (
             details["transport_plan"].float().sum(dim=-2)
-            / target.clamp_min(tiny)
-        ).clamp(0.0, 1.0)
+            / target
+        ).clamp_min(0.0)
         uniform_retention = (
             details["uniform_transport_plan"].float().sum(dim=-2)
-            / target.clamp_min(tiny)
-        ).clamp(0.0, 1.0)
+            / target
+        ).clamp_min(0.0)
         attention_mass = details["transport_plan"].float().sum(
             dim=(-2, -1), keepdim=False,
         ).unsqueeze(-1).clamp(0.0, 1.0)
@@ -1278,8 +1314,10 @@ class OTBarySLA:
                 / uniform_mass.clamp_min(tiny)
             ).clamp(0.0, 1.0)
         else:
-            attention_evidence = attention_retention
-            uniform_absence = 1.0 - uniform_retention
+            # Preserve the legacy raw-gate behavior independently of the
+            # mathematically unbounded UOT retention ratio.
+            attention_evidence = attention_retention.clamp(0.0, 1.0)
+            uniform_absence = 1.0 - uniform_retention.clamp(0.0, 1.0)
         attention_support, present = self._scatter_candidate_retention(
             details["candidate_ids"], attention_evidence,
             layer_weights, final_logits.shape[-1],

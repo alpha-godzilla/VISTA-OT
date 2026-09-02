@@ -124,6 +124,20 @@ class OTBarySLATests(unittest.TestCase):
             rtol=1e-5,
         )
 
+    def test_target_marginal_stays_strictly_positive_after_softmax_underflow(self):
+        method = OTBarySLA(topk=4, visual_tokens=4, sinkhorn_iters=5)
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        logits = torch.full((1, 2, 32), -1000.0)
+        logits[..., 0] = 1000.0
+        _, details = method.compute_layer_weights(
+            logits, self.embedding, return_details=True,
+        )
+        self.assertTrue(torch.all(details["target_marginal"] > 0))
+        torch.testing.assert_close(
+            details["target_marginal"].sum(dim=-1),
+            torch.ones(1, 2),
+        )
+
     def test_independent_uniform_weights_require_directional_mode(self):
         with self.assertRaisesRegex(ValueError, "direction-aware gating"):
             OTBarySLA(independent_uniform_layer_weights=True)
@@ -135,6 +149,35 @@ class OTBarySLATests(unittest.TestCase):
     def test_timestep_gate_requires_mass_centered_directional_mode(self):
         with self.assertRaisesRegex(ValueError, "mass-centered"):
             OTBarySLA(bidirectional_timestep_gating=True)
+
+    def test_timestep_gate_requires_shared_candidates_and_final_norm(self):
+        common = dict(
+            attention_visual_marginal=True,
+            unbalanced=True,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+            mass_centered_direction_gating=True,
+        )
+        with self.assertRaisesRegex(ValueError, "shared candidate"):
+            OTBarySLA(**common, bidirectional_timestep_gating=True)
+        with self.assertRaisesRegex(ValueError, "final-norm"):
+            OTBarySLA(
+                **common,
+                shared_candidate_set=True,
+                bidirectional_timestep_gating=True,
+            )
+
+    def test_shared_candidate_set_is_identical_across_layers(self):
+        method = OTBarySLA(topk=3, shared_candidate_set=True)
+        logits = torch.tensor([[
+            [8.0, 1.0, 0.0, -1.0, -2.0],
+            [-2.0, 7.0, 1.0, 0.0, -1.0],
+        ]])
+        candidate_ids = method._candidate_ids(logits)
+        self.assertEqual(candidate_ids.shape, (1, 2, 3))
+        torch.testing.assert_close(candidate_ids[:, 0], candidate_ids[:, 1])
+        self.assertIn(0, candidate_ids[0, 0].tolist())
+        self.assertIn(1, candidate_ids[0, 0].tolist())
 
     def test_force_uniform_reproduces_original_sla(self):
         method = OTBarySLA(
@@ -267,6 +310,45 @@ class OTBarySLATests(unittest.TestCase):
             places=6,
         )
 
+    def test_mass_centered_gate_preserves_unbounded_retention_before_clipping_evidence(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=1,
+            attention_visual_marginal=True,
+            unbalanced=True,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+            mass_centered_direction_gating=True,
+        )
+        details = {
+            "candidate_ids": torch.tensor([[[1, 2]]]),
+            "target_marginal": torch.tensor([[[0.5, 0.5]]]),
+            # Total mass is 0.8, while the first retention is 0.75/0.5=1.5.
+            "transport_plan": torch.tensor([[[[0.75, 0.05]]]]),
+            "uniform_transport_plan": torch.tensor([[[[0.75, 0.05]]]]),
+        }
+        final = torch.zeros(1, 4)
+        augmented = torch.tensor([[0.0, 2.0, -2.0, 0.0]])
+        _, promote, suppress = method._direction_aware_mix(
+            final, augmented, torch.ones(1, 1), details, 0.5,
+        )
+
+        self.assertAlmostEqual(
+            details["attention_retention"][0, 0, 0].item(), 1.5,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            (
+                details["target_marginal"]
+                * details["attention_retention"]
+            ).sum().item(),
+            0.8,
+            places=6,
+        )
+        self.assertEqual(promote[0, 1].item(), 1.0)
+        self.assertTrue(torch.all((promote >= 0) & (promote <= 1)))
+        self.assertTrue(torch.all((suppress >= 0) & (suppress <= 1)))
+
     def test_mass_centered_direction_gate_removes_global_shrinkage(self):
         method = OTBarySLA(
             topk=2,
@@ -305,6 +387,8 @@ class OTBarySLATests(unittest.TestCase):
             direction_aware_gating=True,
             mass_centered_direction_gating=True,
             bidirectional_timestep_gating=True,
+            shared_candidate_set=True,
+            final_norm_alignment=True,
         )
         # The first candidate has positive attention evidence; the second has
         # uniform whole-image absence evidence. Final logits favor the first,
@@ -406,6 +490,8 @@ class OTBarySLATests(unittest.TestCase):
             independent_uniform_layer_weights=True,
             mass_centered_direction_gating=True,
             bidirectional_timestep_gating=True,
+            shared_candidate_set=True,
+            final_norm_alignment=True,
             log_stats=True,
         )
         method.cache_visual_features(torch.randn(1, 4, 12))

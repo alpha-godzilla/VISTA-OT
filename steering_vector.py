@@ -202,6 +202,12 @@ def add_logits_flag(model, args, tokenizer=None):
             bidirectional_timestep_gating=getattr(
                 args, 'ot_bidirectional_timestep_gate', False,
             ),
+            shared_candidate_set=getattr(
+                args, 'ot_shared_candidate_set', False,
+            ),
+            final_norm_alignment=getattr(
+                args, 'ot_final_norm_alignment', False,
+            ),
         )
     else:
         model.ot_bary_sla = None

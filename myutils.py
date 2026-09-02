@@ -220,6 +220,22 @@ def add_ot_bary_sla_arguments(parser):
             "each decoding timestep."
         ),
     )
+    group.add_argument(
+        "--ot-shared-candidate-set",
+        action="store_true",
+        help=(
+            "Use one top-k support pooled across selected early layers for "
+            "all per-layer UOT solves, making layer costs directly comparable."
+        ),
+    )
+    group.add_argument(
+        "--ot-final-norm-alignment",
+        action="store_true",
+        help=(
+            "Apply the LLM final normalization to selected intermediate "
+            "states before LM-head decoding and visual-token cost construction."
+        ),
+    )
     return parser
 
 
@@ -304,6 +320,22 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError(
             "--ot-bidirectional-timestep-gate requires "
             "--ot-mass-centered-direction-gating"
+        )
+    if (
+        getattr(args, "ot_bidirectional_timestep_gate", False)
+        and not getattr(args, "ot_shared_candidate_set", False)
+    ):
+        raise ValueError(
+            "--ot-bidirectional-timestep-gate requires "
+            "--ot-shared-candidate-set"
+        )
+    if (
+        getattr(args, "ot_bidirectional_timestep_gate", False)
+        and not getattr(args, "ot_final_norm_alignment", False)
+    ):
+        raise ValueError(
+            "--ot-bidirectional-timestep-gate requires "
+            "--ot-final-norm-alignment"
         )
     if directional and (
         getattr(args, "ot_adaptive_alpha", False)
@@ -391,6 +423,10 @@ def prepare_common_fileparts(args):
                     args, "ot_mass_centered_direction_gating", False,
                 ):
                     file_parts.append("masscenter")
+                if getattr(args, "ot_shared_candidate_set", False):
+                    file_parts.append("sharedcand")
+                if getattr(args, "ot_final_norm_alignment", False):
+                    file_parts.append("fnorm")
                 if getattr(args, "ot_bidirectional_timestep_gate", False):
                     file_parts.append("tgate")
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
