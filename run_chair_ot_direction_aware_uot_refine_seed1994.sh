@@ -82,15 +82,17 @@ enqueue() {
     JOB_RHOS+=("$rho"); JOB_REFS+=("$reference"); JOB_RESULTS+=("$result")
     ((pending += 1))
   fi
-  [[ "$method" == vista ]] && stats=""
+  # Never emit empty TSV fields: Bash `read` treats consecutive tab IFS
+  # characters as one separator and would shift result/chair columns.
+  [[ "$method" == vista ]] && stats="na"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$method" "$setting" "$SEED" "$alpha" "$rho" "$reference" "$gpu" "$IDS_FILE" "$result" "${result%.jsonl}_chair.json" "$stats" >> "$MANIFEST"
 }
 
 for raw_alpha in "${LOGITS_ALPHAS[@]}"; do
   alpha="$(canonical_float "$raw_alpha")"
   "$PYTHON_BIN" -c 'import sys; assert 0 <= float(sys.argv[1]) <= 1' "$alpha" || { echo "Each LOGITS_ALPHAS value must be in [0, 1]." >&2; exit 1; }
-  enqueue vista "alpha${alpha}" "$alpha" "" baseline "$(vista_result "$alpha")"
-  enqueue balanced_ot "alpha${alpha}" "$alpha" "" attention "$(ot_result "$alpha" '')"
+  enqueue vista "alpha${alpha}" "$alpha" "na" baseline "$(vista_result "$alpha")"
+  enqueue balanced_ot "alpha${alpha}" "$alpha" "na" attention "$(ot_result "$alpha" '')"
   for raw_rho in "${MARGINAL_RELAXATIONS[@]}"; do
     rho="$(canonical_float "$raw_rho")"
     "$PYTHON_BIN" -c 'import sys; assert float(sys.argv[1]) > 0' "$rho" || { echo "Each MARGINAL_RELAXATIONS value must be positive." >&2; exit 1; }

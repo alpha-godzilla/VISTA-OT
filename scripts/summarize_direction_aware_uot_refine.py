@@ -98,7 +98,11 @@ def main():
             raise ValueError(f"Missing same-alpha VISTA baseline for {key}")
         values = read_metrics(Path(entry["chair_json"]))
         baseline = baselines[key]
-        diagnostics_path = Path(entry["stats_jsonl"]) if entry["stats_jsonl"] else None
+        diagnostics_path = (
+            Path(entry["stats_jsonl"])
+            if entry["stats_jsonl"] not in {"", "na"}
+            else None
+        )
         rows.append({
             "method": entry["method"],
             "setting": entry["setting"],
@@ -106,7 +110,8 @@ def main():
             "logits_alpha": alpha,
             "marginal_relaxation": (
                 float(entry["marginal_relaxation"])
-                if entry["marginal_relaxation"] else None
+                if entry["marginal_relaxation"] not in {"", "na"}
+                else None
             ),
             "layer_weight_reference": entry["layer_weight_reference"],
             **values,

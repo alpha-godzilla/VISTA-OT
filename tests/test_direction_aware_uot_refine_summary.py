@@ -49,10 +49,11 @@ class DirectionAwareUOTRefineSummaryTests(unittest.TestCase):
                         "setting": f"alpha{alpha}",
                         "seed": 1994,
                         "logits_alpha": alpha,
-                        "marginal_relaxation": "" if method == "vista" else 0.5,
+                        "marginal_relaxation": "na" if method == "vista" else 0.5,
                         "layer_weight_reference": "baseline" if method == "vista" else "independent",
                         "gpu": 0, "ids_file": "ids", "result_jsonl": "result",
-                        "chair_json": str(chair), "stats_jsonl": stats,
+                        "chair_json": str(chair),
+                        "stats_jsonl": stats if stats else "na",
                     })
             with manifest.open("w", newline="", encoding="utf-8") as handle:
                 writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
