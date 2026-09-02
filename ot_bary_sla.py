@@ -284,6 +284,7 @@ class OTBarySLA:
         direction_aware_gating: bool = False,
         independent_uniform_layer_weights: bool = False,
         mass_centered_direction_gating: bool = False,
+        bidirectional_timestep_gating: bool = False,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -344,6 +345,11 @@ class OTBarySLA:
             raise ValueError(
                 "Mass-centered direction gating requires direction-aware gating"
             )
+        if bidirectional_timestep_gating and not mass_centered_direction_gating:
+            raise ValueError(
+                "Bidirectional timestep gating requires mass-centered "
+                "direction-aware gating"
+            )
         if direction_aware_gating and (
             adaptive_alpha
             or recall_reward_lambda > 0
@@ -389,6 +395,7 @@ class OTBarySLA:
         self.direction_aware_gating = direction_aware_gating
         self.independent_uniform_layer_weights = independent_uniform_layer_weights
         self.mass_centered_direction_gating = mass_centered_direction_gating
+        self.bidirectional_timestep_gating = bidirectional_timestep_gating
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -886,6 +893,13 @@ class OTBarySLA:
             trace_entry["uniform_layer_weights"] = details[
                 "uniform_layer_weights"
             ].detach().float().cpu().tolist()
+            if "timestep_promotion_strength" in details:
+                trace_entry["timestep_promotion_strength"] = details[
+                    "timestep_promotion_strength"
+                ].detach().float().cpu().tolist()
+                trace_entry["timestep_suppression_strength"] = details[
+                    "timestep_suppression_strength"
+                ].detach().float().cpu().tolist()
         if "uot_iterations" in details:
             trace_entry["uot_iterations"] = float(
                 details["uot_iterations"].detach().cpu().item()
@@ -1286,10 +1300,35 @@ class OTBarySLA:
             torch.zeros_like(uniform_absence_support),
         )
         delta = augmented_logits.float() - final_logits.float()
-        intervention = (
-            promotion_gate * delta.clamp_min(0.0)
-            - suppression_gate * (-delta).clamp_min(0.0)
-        )
+        positive_intervention = promotion_gate * delta.clamp_min(0.0)
+        negative_intervention = suppression_gate * (-delta).clamp_min(0.0)
+        if self.bidirectional_timestep_gating:
+            # Restrict final-logit probabilities to candidates represented by
+            # OT. Positive and negative evidence must remain separate: a
+            # likely hallucinated candidate can have no promotion evidence yet
+            # still need whole-image absence suppression.
+            candidate_logits = final_logits.float().masked_fill(
+                ~present, float("-inf"),
+            )
+            candidate_probability = torch.softmax(candidate_logits, dim=-1)
+            timestep_promotion_strength = (
+                candidate_probability * promotion_gate
+            ).sum(dim=-1, keepdim=True).clamp(0.0, 1.0)
+            timestep_suppression_strength = (
+                candidate_probability * suppression_gate
+            ).sum(dim=-1, keepdim=True).clamp(0.0, 1.0)
+            intervention = (
+                timestep_promotion_strength * positive_intervention
+                - timestep_suppression_strength * negative_intervention
+            )
+            details["timestep_promotion_strength"] = (
+                timestep_promotion_strength.squeeze(-1)
+            )
+            details["timestep_suppression_strength"] = (
+                timestep_suppression_strength.squeeze(-1)
+            )
+        else:
+            intervention = positive_intervention - negative_intervention
         mixed = final_logits.float() + logits_alpha * intervention
         return (
             mixed.to(dtype=final_logits.dtype),
@@ -1446,6 +1485,15 @@ class OTBarySLA:
                     "attention_uniform_retention_gap"
                 ].float().mean(),
             }
+            if "timestep_promotion_strength" in details:
+                direction_values.update({
+                    "timestep_promotion_strength": details[
+                        "timestep_promotion_strength"
+                    ].float().mean(),
+                    "timestep_suppression_strength": details[
+                        "timestep_suppression_strength"
+                    ].float().mean(),
+                })
             for name, value in direction_values.items():
                 if name not in self._stats:
                     self._stats[name] = value.detach().clone()

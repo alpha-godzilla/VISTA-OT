@@ -199,6 +199,9 @@ def add_logits_flag(model, args, tokenizer=None):
             mass_centered_direction_gating=getattr(
                 args, 'ot_mass_centered_direction_gating', False,
             ),
+            bidirectional_timestep_gating=getattr(
+                args, 'ot_bidirectional_timestep_gate', False,
+            ),
         )
     else:
         model.ot_bary_sla = None

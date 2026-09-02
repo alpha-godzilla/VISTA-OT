@@ -211,6 +211,15 @@ def add_ot_bary_sla_arguments(parser):
             "gates. This removes rho-driven global retention shrinkage."
         ),
     )
+    group.add_argument(
+        "--ot-bidirectional-timestep-gate",
+        action="store_true",
+        help=(
+            "Scale direction-aware OT promotion and suppression separately "
+            "by their final-logit probability-weighted visual evidence at "
+            "each decoding timestep."
+        ),
+    )
     return parser
 
 
@@ -287,6 +296,14 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError(
             "--ot-mass-centered-direction-gating requires "
             "--ot-direction-aware-gating"
+        )
+    if (
+        getattr(args, "ot_bidirectional_timestep_gate", False)
+        and not getattr(args, "ot_mass_centered_direction_gating", False)
+    ):
+        raise ValueError(
+            "--ot-bidirectional-timestep-gate requires "
+            "--ot-mass-centered-direction-gating"
         )
     if directional and (
         getattr(args, "ot_adaptive_alpha", False)
@@ -374,6 +391,8 @@ def prepare_common_fileparts(args):
                     args, "ot_mass_centered_direction_gating", False,
                 ):
                     file_parts.append("masscenter")
+                if getattr(args, "ot_bidirectional_timestep_gate", False):
+                    file_parts.append("tgate")
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
                 recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
                 if recall_lambda or recovery_rho:

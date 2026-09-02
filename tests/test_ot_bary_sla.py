@@ -132,6 +132,10 @@ class OTBarySLATests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "direction-aware gating"):
             OTBarySLA(mass_centered_direction_gating=True)
 
+    def test_timestep_gate_requires_mass_centered_directional_mode(self):
+        with self.assertRaisesRegex(ValueError, "mass-centered"):
+            OTBarySLA(bidirectional_timestep_gating=True)
+
     def test_force_uniform_reproduces_original_sla(self):
         method = OTBarySLA(
             topk=4,
@@ -291,6 +295,58 @@ class OTBarySLATests(unittest.TestCase):
         torch.testing.assert_close(suppress, torch.zeros_like(suppress))
         torch.testing.assert_close(mixed, final)
 
+    def test_bidirectional_timestep_gate_keeps_positive_and_negative_evidence_separate(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=1,
+            attention_visual_marginal=True,
+            unbalanced=True,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+            mass_centered_direction_gating=True,
+            bidirectional_timestep_gating=True,
+        )
+        # The first candidate has positive attention evidence; the second has
+        # uniform whole-image absence evidence. Final logits favor the first,
+        # so q+ must be much larger than q-.
+        details = {
+            "candidate_ids": torch.tensor([[[1, 2]]]),
+            "target_marginal": torch.tensor([[[0.5, 0.5]]]),
+            "transport_plan": torch.tensor([[[[0.4, 0.1]]]]),
+            "uniform_transport_plan": torch.tensor([[[[0.4, 0.1]]]]),
+        }
+        final = torch.tensor([[0.0, 2.0, 0.0, 0.0]])
+        augmented = torch.tensor([[0.0, 4.0, -2.0, 0.0]])
+        mixed, promote, suppress = method._direction_aware_mix(
+            final, augmented, torch.ones(1, 1), details, 0.5,
+        )
+
+        candidate_probability = torch.softmax(torch.tensor([2.0, 0.0]), dim=0)
+        expected_q_plus = 0.6 * candidate_probability[0]
+        expected_q_minus = 0.6 * candidate_probability[1]
+        self.assertAlmostEqual(
+            details["timestep_promotion_strength"].item(),
+            expected_q_plus.item(), places=6,
+        )
+        self.assertAlmostEqual(
+            details["timestep_suppression_strength"].item(),
+            expected_q_minus.item(), places=6,
+        )
+        self.assertGreater(
+            details["timestep_promotion_strength"].item(),
+            details["timestep_suppression_strength"].item(),
+        )
+        self.assertAlmostEqual(
+            mixed[0, 1].item(), 2.0 + 0.5 * expected_q_plus.item() * 0.6 * 2.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            mixed[0, 2].item(), -0.5 * expected_q_minus.item() * 0.6 * 2.0,
+            places=6,
+        )
+        self.assertEqual(promote[0, 3].item(), 0.0)
+        self.assertEqual(suppress[0, 3].item(), 0.0)
+
     def test_independent_uniform_weights_remove_attention_layer_bias(self):
         common = dict(
             topk=1,
@@ -349,6 +405,7 @@ class OTBarySLATests(unittest.TestCase):
             direction_aware_gating=True,
             independent_uniform_layer_weights=True,
             mass_centered_direction_gating=True,
+            bidirectional_timestep_gating=True,
             log_stats=True,
         )
         method.cache_visual_features(torch.randn(1, 4, 12))
@@ -386,6 +443,8 @@ class OTBarySLATests(unittest.TestCase):
         )
         self.assertIn("mean_uniform_retention_abs_deviation", diagnostics)
         self.assertIn("mean_attention_uniform_retention_gap", diagnostics)
+        self.assertIn("mean_timestep_promotion_strength", diagnostics)
+        self.assertIn("mean_timestep_suppression_strength", diagnostics)
 
     def test_aligned_layer_receives_highest_weight(self):
         embedding = torch.zeros(12, 4)
