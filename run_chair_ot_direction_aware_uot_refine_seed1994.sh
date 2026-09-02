@@ -138,10 +138,14 @@ run_job() {
 run_worker() { local worker="$1" gpu="${GPUS[$worker]}" index; for ((index=worker; index<${#JOB_METHODS[@]}; index+=${#GPUS[@]})); do run_job "$index" "$gpu"; done; }
 
 echo "Direction-aware UOT refinement: ${#JOB_METHODS[@]} pending jobs on GPUs ${GPUS[*]}"
-declare -a PIDS=()
-for ((worker=0; worker<${#GPUS[@]} && worker<${#JOB_METHODS[@]}; worker+=1)); do run_worker "$worker" & PIDS+=("$!"); done
 failed=0
-for pid in "${PIDS[@]}"; do wait "$pid" || failed=1; done
+if (( ${#JOB_METHODS[@]} > 0 )); then
+  declare -a PIDS=()
+  for ((worker=0; worker<${#GPUS[@]} && worker<${#JOB_METHODS[@]}; worker+=1)); do
+    run_worker "$worker" & PIDS+=("$!")
+  done
+  for pid in "${PIDS[@]}"; do wait "$pid" || failed=1; done
+fi
 (( failed == 0 )) || { echo "Generation failed; see $SWEEP_DIR/logs" >&2; exit 1; }
 
 while IFS=$'\t' read -r method setting seed alpha rho reference gpu ids result chair_json stats_jsonl; do
