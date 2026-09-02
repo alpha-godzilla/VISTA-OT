@@ -202,6 +202,15 @@ def add_ot_bary_sla_arguments(parser):
             "computed from the uniform UOT plan instead of attention-UOT weights."
         ),
     )
+    group.add_argument(
+        "--ot-mass-centered-direction-gating",
+        action="store_true",
+        help=(
+            "Center per-candidate UOT retention by each layer's transported "
+            "mass before constructing direction-aware promotion/suppression "
+            "gates. This removes rho-driven global retention shrinkage."
+        ),
+    )
     return parser
 
 
@@ -269,6 +278,14 @@ def validate_ot_bary_sla_arguments(args):
     if independent_uniform and not directional:
         raise ValueError(
             "--ot-independent-uniform-layer-weights requires "
+            "--ot-direction-aware-gating"
+        )
+    if (
+        getattr(args, "ot_mass_centered_direction_gating", False)
+        and not directional
+    ):
+        raise ValueError(
+            "--ot-mass-centered-direction-gating requires "
             "--ot-direction-aware-gating"
         )
     if directional and (
@@ -353,6 +370,10 @@ def prepare_common_fileparts(args):
                     args, "ot_independent_uniform_layer_weights", False,
                 ):
                     file_parts.append("induni")
+                if getattr(
+                    args, "ot_mass_centered_direction_gating", False,
+                ):
+                    file_parts.append("masscenter")
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
                 recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
                 if recall_lambda or recovery_rho:

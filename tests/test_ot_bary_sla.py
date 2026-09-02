@@ -128,6 +128,10 @@ class OTBarySLATests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "direction-aware gating"):
             OTBarySLA(independent_uniform_layer_weights=True)
 
+    def test_mass_centering_requires_directional_mode(self):
+        with self.assertRaisesRegex(ValueError, "direction-aware gating"):
+            OTBarySLA(mass_centered_direction_gating=True)
+
     def test_force_uniform_reproduces_original_sla(self):
         method = OTBarySLA(
             topk=4,
@@ -226,6 +230,67 @@ class OTBarySLATests(unittest.TestCase):
         self.assertEqual(suppress[0, 1].item(), 1.0)
         self.assertAlmostEqual(mixed[0, 1].item(), -0.6, places=6)
 
+    def test_mass_centered_direction_gate_uses_relative_retention(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=1,
+            attention_visual_marginal=True,
+            unbalanced=True,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+            mass_centered_direction_gating=True,
+        )
+        # Retentions are [0.8, 0.2] under a uniform target, hence transported
+        # mass is 0.5. The normalized positive/negative deviations are 0.6.
+        details = {
+            "candidate_ids": torch.tensor([[[1, 2]]]),
+            "target_marginal": torch.tensor([[[0.5, 0.5]]]),
+            "transport_plan": torch.tensor([[[[0.4, 0.1]]]]),
+            "uniform_transport_plan": torch.tensor([[[[0.4, 0.1]]]]),
+        }
+        final = torch.zeros(1, 4)
+        augmented = torch.tensor([[0.0, 2.0, -2.0, 0.0]])
+        mixed, promote, suppress = method._direction_aware_mix(
+            final, augmented, torch.ones(1, 1), details, 0.5,
+        )
+
+        self.assertAlmostEqual(promote[0, 1].item(), 0.6, places=6)
+        self.assertAlmostEqual(suppress[0, 2].item(), 0.6, places=6)
+        self.assertAlmostEqual(mixed[0, 1].item(), 0.6, places=6)
+        self.assertAlmostEqual(mixed[0, 2].item(), -0.6, places=6)
+        self.assertAlmostEqual(
+            details["attention_retention_abs_deviation"].item(), 0.3,
+            places=6,
+        )
+
+    def test_mass_centered_direction_gate_removes_global_shrinkage(self):
+        method = OTBarySLA(
+            topk=2,
+            visual_tokens=1,
+            attention_visual_marginal=True,
+            unbalanced=True,
+            mass_aware_layer_weights=True,
+            direction_aware_gating=True,
+            mass_centered_direction_gating=True,
+        )
+        # Both candidates retain the same 0.4 fraction. This is pure global
+        # UOT mass shrinkage, so centered promotion and suppression are zero.
+        details = {
+            "candidate_ids": torch.tensor([[[1, 2]]]),
+            "target_marginal": torch.tensor([[[0.5, 0.5]]]),
+            "transport_plan": torch.tensor([[[[0.2, 0.2]]]]),
+            "uniform_transport_plan": torch.tensor([[[[0.2, 0.2]]]]),
+        }
+        final = torch.tensor([[0.0, 0.5, -0.5, 0.0]])
+        augmented = torch.tensor([[0.0, 2.0, -2.0, 0.0]])
+        mixed, promote, suppress = method._direction_aware_mix(
+            final, augmented, torch.ones(1, 1), details, 1.0,
+        )
+
+        torch.testing.assert_close(promote, torch.zeros_like(promote))
+        torch.testing.assert_close(suppress, torch.zeros_like(suppress))
+        torch.testing.assert_close(mixed, final)
+
     def test_independent_uniform_weights_remove_attention_layer_bias(self):
         common = dict(
             topk=1,
@@ -283,6 +348,7 @@ class OTBarySLATests(unittest.TestCase):
             mass_aware_layer_weights=True,
             direction_aware_gating=True,
             independent_uniform_layer_weights=True,
+            mass_centered_direction_gating=True,
             log_stats=True,
         )
         method.cache_visual_features(torch.randn(1, 4, 12))
@@ -315,6 +381,11 @@ class OTBarySLATests(unittest.TestCase):
         self.assertIn("mean_uniform_layer_weights", diagnostics)
         self.assertIn("mean_uot_iterations", diagnostics)
         self.assertIn("mean_uniform_uot_dual_residual", diagnostics)
+        self.assertIn(
+            "mean_attention_retention_abs_deviation", diagnostics,
+        )
+        self.assertIn("mean_uniform_retention_abs_deviation", diagnostics)
+        self.assertIn("mean_attention_uniform_retention_gap", diagnostics)
 
     def test_aligned_layer_receives_highest_weight(self):
         embedding = torch.zeros(12, 4)

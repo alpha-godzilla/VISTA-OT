@@ -283,6 +283,7 @@ class OTBarySLA:
         mass_aware_layer_weights: bool = False,
         direction_aware_gating: bool = False,
         independent_uniform_layer_weights: bool = False,
+        mass_centered_direction_gating: bool = False,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -339,6 +340,10 @@ class OTBarySLA:
             raise ValueError(
                 "Independent uniform layer weights require direction-aware gating"
             )
+        if mass_centered_direction_gating and not direction_aware_gating:
+            raise ValueError(
+                "Mass-centered direction gating requires direction-aware gating"
+            )
         if direction_aware_gating and (
             adaptive_alpha
             or recall_reward_lambda > 0
@@ -383,6 +388,7 @@ class OTBarySLA:
         self.mass_aware_layer_weights = mass_aware_layer_weights
         self.direction_aware_gating = direction_aware_gating
         self.independent_uniform_layer_weights = independent_uniform_layer_weights
+        self.mass_centered_direction_gating = mass_centered_direction_gating
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -1227,12 +1233,45 @@ class OTBarySLA:
             details["uniform_transport_plan"].float().sum(dim=-2)
             / target.clamp_min(tiny)
         ).clamp(0.0, 1.0)
+        attention_mass = details["transport_plan"].float().sum(
+            dim=(-2, -1), keepdim=False,
+        ).unsqueeze(-1).clamp(0.0, 1.0)
+        uniform_mass = details["uniform_transport_plan"].float().sum(
+            dim=(-2, -1), keepdim=False,
+        ).unsqueeze(-1).clamp(0.0, 1.0)
+        details["attention_retention"] = attention_retention
+        details["uniform_retention"] = uniform_retention
+        details["attention_retention_abs_deviation"] = (
+            target * (attention_retention - attention_mass).abs()
+        ).sum(dim=-1)
+        details["uniform_retention_abs_deviation"] = (
+            target * (uniform_retention - uniform_mass).abs()
+        ).sum(dim=-1)
+        details["attention_uniform_retention_gap"] = (
+            target * (attention_retention - uniform_retention).abs()
+        ).sum(dim=-1)
+
+        if self.mass_centered_direction_gating:
+            # In UOT, sum_m b_m r_m equals the transported mass.  Subtracting
+            # that identity-derived baseline removes the global shrinkage set
+            # mainly by rho, leaving only candidate-specific evidence.
+            attention_evidence = (
+                (attention_retention - attention_mass).clamp_min(0.0)
+                / (1.0 - attention_mass).clamp_min(tiny)
+            ).clamp(0.0, 1.0)
+            uniform_absence = (
+                (uniform_mass - uniform_retention).clamp_min(0.0)
+                / uniform_mass.clamp_min(tiny)
+            ).clamp(0.0, 1.0)
+        else:
+            attention_evidence = attention_retention
+            uniform_absence = 1.0 - uniform_retention
         attention_support, present = self._scatter_candidate_retention(
-            details["candidate_ids"], attention_retention,
+            details["candidate_ids"], attention_evidence,
             layer_weights, final_logits.shape[-1],
         )
-        uniform_support, _ = self._scatter_candidate_retention(
-            details["candidate_ids"], uniform_retention,
+        uniform_absence_support, _ = self._scatter_candidate_retention(
+            details["candidate_ids"], uniform_absence,
             (
                 details["uniform_layer_weights"]
                 if self.independent_uniform_layer_weights
@@ -1242,7 +1281,9 @@ class OTBarySLA:
         )
         promotion_gate = attention_support
         suppression_gate = torch.where(
-            present, 1.0 - uniform_support, torch.zeros_like(uniform_support),
+            present,
+            uniform_absence_support,
+            torch.zeros_like(uniform_absence_support),
         )
         delta = augmented_logits.float() - final_logits.float()
         intervention = (
@@ -1395,6 +1436,15 @@ class OTBarySLA:
                 "uniform_layer_weights": details[
                     "uniform_layer_weights"
                 ].float().mean(dim=0),
+                "attention_retention_abs_deviation": details[
+                    "attention_retention_abs_deviation"
+                ].float().mean(),
+                "uniform_retention_abs_deviation": details[
+                    "uniform_retention_abs_deviation"
+                ].float().mean(),
+                "attention_uniform_retention_gap": details[
+                    "attention_uniform_retention_gap"
+                ].float().mean(),
             }
             for name, value in direction_values.items():
                 if name not in self._stats:

@@ -72,6 +72,28 @@ class OTBaryCLICompatibilityTests(unittest.TestCase):
         self.assertIn("m16_kunpooled_it50_tol0.001", actual)
         self.assertNotIn("vdust", actual)
 
+    def test_mass_centered_direction_gate_has_distinct_filename_tag(self):
+        args = common_args()
+        args.use_ot_bary_sla = True
+        args.ot_attention_visual_marginal = True
+        args.ot_topk = 16
+        args.ot_sinkhorn_iters = 100
+        args.ot_sinkhorn_tolerance = 1e-3
+        args.ot_epsilon = 0.05
+        args.ot_layer_temperature = 0.06
+        args.ot_attention_power = 0.75
+        args.ot_attention_uniform_mix = 0.02
+        args.ot_force_uniform = False
+        args.ot_unbalanced = True
+        args.ot_marginal_relaxation = 0.7
+        args.ot_mass_aware_layer_weights = True
+        args.ot_direction_aware_gating = True
+        args.ot_independent_uniform_layer_weights = True
+        args.ot_mass_centered_direction_gating = True
+
+        actual = "_".join(myutils.prepare_common_fileparts(args))
+        self.assertIn("uot_mrel0.7_masslayer_dirgate_induni_masscenter", actual)
+
 
 if __name__ == "__main__":
     unittest.main()
