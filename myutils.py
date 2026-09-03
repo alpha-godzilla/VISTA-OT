@@ -422,13 +422,27 @@ def prepare_common_fileparts(args):
                 if getattr(
                     args, "ot_mass_centered_direction_gating", False,
                 ):
-                    file_parts.append("masscenter")
+                    # Preserve legacy names for mass-centering alone, while
+                    # keeping the new aligned variants (including their
+                    # `_ot_stats.jsonl` sidecars) below NAME_MAX.
+                    aligned_variant = any(
+                        getattr(args, name, False)
+                        for name in (
+                            "ot_shared_candidate_set",
+                            "ot_final_norm_alignment",
+                            "ot_bidirectional_timestep_gate",
+                        )
+                    )
+                    file_parts.append("mc" if aligned_variant else "masscenter")
                 if getattr(args, "ot_shared_candidate_set", False):
-                    file_parts.append("sharedcand")
+                    # Keep only the result-path tag compact.  The public CLI
+                    # flag remains descriptive; full attention-UOT filenames
+                    # are otherwise liable to exceed Linux NAME_MAX (255).
+                    file_parts.append("sc")
                 if getattr(args, "ot_final_norm_alignment", False):
-                    file_parts.append("fnorm")
+                    file_parts.append("fn")
                 if getattr(args, "ot_bidirectional_timestep_gate", False):
-                    file_parts.append("tgate")
+                    file_parts.append("tg")
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
                 recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
                 if recall_lambda or recovery_rho:

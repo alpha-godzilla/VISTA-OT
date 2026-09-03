@@ -96,9 +96,10 @@ class OTBaryCLICompatibilityTests(unittest.TestCase):
 
         actual = "_".join(myutils.prepare_common_fileparts(args))
         self.assertIn(
-            "uot_mrel0.7_masslayer_dirgate_induni_masscenter_"
-            "sharedcand_fnorm_tgate", actual,
+            "uot_mrel0.7_masslayer_dirgate_induni_mc_"
+            "sc_fn_tg", actual,
         )
+        self.assertLessEqual(len(actual + "_ot_stats.jsonl"), 255)
 
 
 if __name__ == "__main__":
