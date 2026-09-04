@@ -208,6 +208,11 @@ def add_logits_flag(model, args, tokenizer=None):
             final_norm_alignment=getattr(
                 args, 'ot_final_norm_alignment', False,
             ),
+            head_aware_mode=getattr(args, 'ot_head_aware_mode', 'none'),
+            head_topk=getattr(args, 'ot_head_topk', 4),
+            head_temperature=getattr(args, 'ot_head_temperature', 0.1),
+            head_uniform_mix=getattr(args, 'ot_head_uniform_mix', 0.0),
+            head_mass_weight=getattr(args, 'ot_head_mass_weight', 0.1),
         )
     else:
         model.ot_bary_sla = None

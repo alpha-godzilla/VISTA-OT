@@ -287,6 +287,11 @@ class OTBarySLA:
         bidirectional_timestep_gating: bool = False,
         shared_candidate_set: bool = False,
         final_norm_alignment: bool = False,
+        head_aware_mode: str = "none",
+        head_topk: int = 4,
+        head_temperature: float = 0.1,
+        head_uniform_mix: float = 0.0,
+        head_mass_weight: float = 0.1,
     ):
         if topk <= 0:
             raise ValueError(f"topk must be positive; got {topk}")
@@ -360,6 +365,24 @@ class OTBarySLA:
             raise ValueError(
                 "Bidirectional timestep gating requires final-norm alignment"
             )
+        if head_aware_mode not in {"none", "mass", "uot", "uot_uniform"}:
+            raise ValueError(f"Unknown head-aware mode: {head_aware_mode}")
+        if head_aware_mode != "none" and not attention_visual_marginal:
+            raise ValueError(
+                "Head-aware OT requires the attention visual marginal"
+            )
+        if head_topk <= 0:
+            raise ValueError("head_topk must be positive")
+        if head_temperature <= 0:
+            raise ValueError("head_temperature must be positive")
+        if not 0.0 <= head_uniform_mix < 1.0:
+            raise ValueError("head_uniform_mix must be in [0, 1)")
+        if head_aware_mode != "uot_uniform" and head_uniform_mix != 0.0:
+            raise ValueError(
+                "head_uniform_mix is only valid in uot_uniform mode"
+            )
+        if head_mass_weight < 0:
+            raise ValueError("head_mass_weight must be non-negative")
         if direction_aware_gating and (
             adaptive_alpha
             or recall_reward_lambda > 0
@@ -408,6 +431,11 @@ class OTBarySLA:
         self.bidirectional_timestep_gating = bidirectional_timestep_gating
         self.shared_candidate_set = shared_candidate_set
         self.final_norm_alignment = final_norm_alignment
+        self.head_aware_mode = head_aware_mode
+        self.head_topk = head_topk
+        self.head_temperature = head_temperature
+        self.head_uniform_mix = head_uniform_mix
+        self.head_mass_weight = head_mass_weight
 
         self._visual_extended: Optional[torch.Tensor] = None
         self._visual_local: Optional[torch.Tensor] = None
@@ -666,6 +694,80 @@ class OTBarySLA:
                 + self.attention_uniform_mix / visual_tokens
             )
         return source
+
+    def _head_attention_source_marginals(
+        self,
+        attentions: Sequence[torch.Tensor],
+        layer_indices: Sequence[int],
+        batch_size: int,
+        visual_tokens: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return normalized per-head visual marginals and raw visual mass.
+
+        The returned source has shape ``[B, W, H, K]``.  The second return
+        value is the pre-normalization visual attention mass ``[B, W, H]``;
+        this keeps heads that mostly attend to text from becoming equivalent
+        to visually engaged heads merely because each head is normalized.
+        """
+        if len(attentions) <= max(layer_indices):
+            raise ValueError("Attention outputs do not cover the requested SLA layers")
+        layer_attention = [attentions[index] for index in layer_indices]
+        if any(attention is None for attention in layer_attention):
+            raise RuntimeError("Attention OT requires output_attentions=True")
+        key_length = layer_attention[0].shape[-1]
+        positions = self._expanded_attention_positions(batch_size, key_length).to(
+            device=layer_attention[0].device,
+        )
+        raw_weights = []
+        for attention in layer_attention:
+            if attention.ndim != 4 or attention.shape[0] != batch_size:
+                raise ValueError("Each attention tensor must have shape [batch, heads, query, key]")
+            if attention.shape[-1] != key_length:
+                raise ValueError("Attention key lengths differ across SLA layers")
+            current = attention.float()[:, :, -1, :]
+            samples = [
+                current[index, :, positions[index]]
+                for index in range(batch_size)
+            ]
+            counts = {sample.shape[-1] for sample in samples}
+            if len(counts) != 1 or next(iter(counts)) != visual_tokens:
+                raise ValueError(
+                    "Unpooled attention and layer visual-token counts differ"
+                )
+            raw_weights.append(torch.stack(samples))
+
+        raw = torch.stack(raw_weights, dim=1).clamp_min(0.0)
+        visual_mass = raw.sum(dim=-1)
+        source = raw.pow(self.attention_power)
+        if (
+            self.attention_coverage_beta > 0
+            and self._attention_coverage is not None
+        ):
+            coverage = self._attention_coverage.to(
+                device=source.device, dtype=source.dtype,
+            )
+            coverage_total = coverage.sum(dim=-1, keepdim=True)
+            relative_coverage = torch.where(
+                coverage_total > torch.finfo(source.dtype).tiny,
+                coverage * visual_tokens / coverage_total,
+                torch.ones_like(coverage),
+            )
+            correction = (
+                relative_coverage + self.attention_coverage_epsilon
+            ).pow(-self.attention_coverage_beta)
+            source = source * correction[:, None, None, :]
+        source_total = source.sum(dim=-1, keepdim=True)
+        source = torch.where(
+            source_total > torch.finfo(source.dtype).tiny,
+            source / source_total.clamp_min(torch.finfo(source.dtype).tiny),
+            torch.full_like(source, 1.0 / visual_tokens),
+        )
+        if self.attention_uniform_mix:
+            source = (
+                (1.0 - self.attention_uniform_mix) * source
+                + self.attention_uniform_mix / visual_tokens
+            )
+        return source, visual_mass
 
     def _top_candidate_ids(
         self,
@@ -1064,13 +1166,44 @@ class OTBarySLA:
                 )
             cost = 1.0 - similarity
             visual_nodes = visual.shape[-2]
+            head_sources = None
+            head_visual_mass = None
+            head_weights = None
+            head_selected_indices = None
+            head_scores = None
             if self.attention_visual_marginal:
-                source_marginal = self._attention_source_marginal(
-                    attentions=attentions,
-                    layer_indices=attention_layer_indices,
-                    batch_size=batch_size,
-                    visual_tokens=visual_nodes,
-                ).to(device=cost.device)
+                if self.head_aware_mode == "none":
+                    source_marginal = self._attention_source_marginal(
+                        attentions=attentions,
+                        layer_indices=attention_layer_indices,
+                        batch_size=batch_size,
+                        visual_tokens=visual_nodes,
+                    ).to(device=cost.device)
+                else:
+                    head_sources, head_visual_mass = (
+                        self._head_attention_source_marginals(
+                            attentions=attentions,
+                            layer_indices=attention_layer_indices,
+                            batch_size=batch_size,
+                            visual_tokens=visual_nodes,
+                        )
+                    )
+                    head_sources = head_sources.to(device=cost.device)
+                    head_visual_mass = head_visual_mass.to(device=cost.device)
+                    if self.head_aware_mode == "mass":
+                        head_weights = torch.softmax(
+                            head_visual_mass.clamp_min(
+                                torch.finfo(torch.float32).tiny
+                            ).log() / self.head_temperature,
+                            dim=-1,
+                        )
+                        source_marginal = (
+                            head_sources * head_weights.unsqueeze(-1)
+                        ).sum(dim=2)
+                    else:
+                        # Filled after target marginals are available: UOT
+                        # itself supplies the dynamic head reliability.
+                        source_marginal = None
             else:
                 source_marginal = torch.full(
                     (1, 1, visual_nodes),
@@ -1095,7 +1228,77 @@ class OTBarySLA:
             )
             transport_cost = cost.clamp(0.0, 2.0) if self.unbalanced else cost
             transport_diagnostics = None
-            if self.unbalanced:
+            if self.head_aware_mode in {"uot", "uot_uniform"}:
+                if head_sources is None or head_visual_mass is None:
+                    raise RuntimeError("Head-UOT requires head attention sources")
+                head_count = head_sources.shape[2]
+                selected_count = min(self.head_topk, head_count)
+                head_selected_indices = head_visual_mass.topk(
+                    selected_count, dim=-1,
+                ).indices
+                selected_sources = torch.gather(
+                    head_sources,
+                    dim=2,
+                    index=head_selected_indices.unsqueeze(-1).expand(
+                        -1, -1, -1, visual_nodes,
+                    ),
+                )
+                expanded_cost = transport_cost.unsqueeze(2).expand(
+                    -1, -1, selected_count, -1, -1,
+                )
+                expanded_target = target_marginal.unsqueeze(2).expand(
+                    -1, -1, selected_count, -1,
+                )
+                if self.unbalanced:
+                    head_transport_plan, transport_diagnostics = (
+                        log_unbalanced_sinkhorn(
+                            expanded_cost,
+                            selected_sources,
+                            expanded_target,
+                            epsilon=self.epsilon,
+                            marginal_relaxation=self.marginal_relaxation,
+                            num_iters=self.sinkhorn_iters,
+                            tolerance=self.sinkhorn_tolerance,
+                            return_diagnostics=True,
+                        )
+                    )
+                else:
+                    head_transport_plan = log_sinkhorn(
+                        expanded_cost,
+                        selected_sources,
+                        expanded_target,
+                        epsilon=self.epsilon,
+                        num_iters=self.sinkhorn_iters,
+                        tolerance=self.sinkhorn_tolerance,
+                    )
+                head_mass = head_transport_plan.sum(dim=(-2, -1))
+                head_cost = (head_transport_plan * expanded_cost).sum(
+                    dim=(-2, -1)
+                ) / head_mass.clamp_min(torch.finfo(torch.float32).tiny)
+                # Conditional cost alone can select an expert that transports
+                # almost no mass. The log-mass term is a reliability factor,
+                # not a semantic probability.
+                head_scores = (
+                    -head_cost
+                    + self.head_mass_weight * head_mass.clamp_min(
+                        torch.finfo(torch.float32).tiny
+                    ).log()
+                )
+                head_weights = torch.softmax(
+                    head_scores / self.head_temperature, dim=-1,
+                )
+                if self.head_aware_mode == "uot_uniform":
+                    head_weights = (
+                        (1.0 - self.head_uniform_mix) * head_weights
+                        + self.head_uniform_mix / selected_count
+                    )
+                transport_plan = (
+                    head_transport_plan * head_weights.unsqueeze(-1).unsqueeze(-1)
+                ).sum(dim=2)
+                source_marginal = (
+                    selected_sources * head_weights.unsqueeze(-1)
+                ).sum(dim=2)
+            elif self.unbalanced:
                 transport_plan, transport_diagnostics = log_unbalanced_sinkhorn(
                     transport_cost,
                     source_marginal,
@@ -1207,6 +1410,29 @@ class OTBarySLA:
             "layer_scores": -layer_costs,
             "local_transport_mass": local_mass,
         }
+        if head_weights is not None:
+            head_entropy = -(
+                head_weights * head_weights.clamp_min(
+                    torch.finfo(torch.float32).tiny
+                ).log()
+            ).sum(dim=-1)
+            details["head_weights"] = head_weights
+            details["head_effective_count"] = head_entropy.exp()
+            details["head_visual_mass"] = (
+                (
+                    torch.gather(
+                        head_visual_mass,
+                        dim=2,
+                        index=head_selected_indices,
+                    )
+                    if head_selected_indices is not None
+                    else head_visual_mass
+                ) * head_weights
+            ).sum(dim=-1)
+            if head_selected_indices is not None:
+                details["head_selected_indices"] = head_selected_indices
+            if head_scores is not None:
+                details["head_scores"] = head_scores
         if uniform_transport_plan is not None:
             details["uniform_transport_plan"] = uniform_transport_plan
             details["uniform_layer_weights"] = uniform_layer_weights_fp32.to(
@@ -1533,6 +1759,17 @@ class OTBarySLA:
                     ].float().mean(),
                 })
             for name, value in direction_values.items():
+                if name not in self._stats:
+                    self._stats[name] = value.detach().clone()
+                else:
+                    self._stats[name].add_(value.detach())
+        if self.log_stats and "head_weights" in details:
+            head_values = {
+                "head_effective_count": details["head_effective_count"].float().mean(),
+                "head_visual_mass": details["head_visual_mass"].float().mean(),
+                "head_max_weight": details["head_weights"].float().amax(dim=-1).mean(),
+            }
+            for name, value in head_values.items():
                 if name not in self._stats:
                     self._stats[name] = value.detach().clone()
                 else:

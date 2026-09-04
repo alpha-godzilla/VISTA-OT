@@ -733,6 +733,67 @@ class OTBarySLATests(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(weights).all())
 
+    def test_mass_head_marginal_prefers_heads_with_visual_mass(self):
+        method = OTBarySLA(
+            topk=2, visual_tokens=4, epsilon=0.1, sinkhorn_iters=20,
+            attention_visual_marginal=True, attention_power=1.0,
+            attention_uniform_mix=0.0, head_aware_mode="mass",
+            head_temperature=0.1,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        positions = torch.tensor([[False, True, True, True, True, False]])
+        method.cache_visual_attention_positions(positions)
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        attention = torch.zeros(1, 2, 1, 6)
+        attention[:, 0, 0, 1] = 0.8
+        attention[:, 0, 0, 2] = 0.1
+        attention[:, 1, 0, 3] = 0.1
+        attention[:, 1, 0, 0] = 0.9
+        _, details = method.compute_layer_weights(
+            self.early_logits[:1, :2], self.embedding, return_details=True,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+        self.assertEqual(details["head_weights"].shape, (1, 2, 2))
+        self.assertGreater(details["head_weights"][0, 0, 0].item(), 0.99)
+        torch.testing.assert_close(
+            details["source_marginal"].sum(dim=-1), torch.ones(1, 2),
+        )
+
+    def test_uot_head_experts_mix_plans_and_respect_uniform_prior(self):
+        method = OTBarySLA(
+            topk=2, visual_tokens=4, epsilon=0.1, sinkhorn_iters=30,
+            attention_visual_marginal=True, attention_power=1.0,
+            attention_uniform_mix=0.0, unbalanced=True,
+            marginal_relaxation=0.5, mass_aware_layer_weights=True,
+            direction_aware_gating=True, head_aware_mode="uot_uniform",
+            head_topk=2, head_temperature=0.1, head_uniform_mix=0.2,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        positions = torch.tensor([[False, True, True, True, True, False]])
+        method.cache_visual_attention_positions(positions)
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        attention = torch.zeros(1, 2, 1, 6)
+        attention[:, 0, 0, 1] = 0.7
+        attention[:, 0, 0, 2] = 0.2
+        attention[:, 1, 0, 3] = 0.6
+        attention[:, 1, 0, 4] = 0.2
+        _, details = method.compute_layer_weights(
+            self.early_logits[:1, :2], self.embedding, return_details=True,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+        self.assertEqual(details["transport_plan"].shape, (1, 2, 4, 2))
+        self.assertEqual(details["head_weights"].shape, (1, 2, 2))
+        self.assertGreaterEqual(details["head_weights"].min().item(), 0.1)
+        torch.testing.assert_close(
+            details["head_weights"].sum(dim=-1), torch.ones(1, 2),
+        )
+
     def test_attention_trace_records_effective_patch_mass(self):
         method = OTBarySLA(
             topk=2,

@@ -236,6 +236,31 @@ def add_ot_bary_sla_arguments(parser):
             "states before LM-head decoding and visual-token cost construction."
         ),
     )
+    group.add_argument(
+        "--ot-head-aware-mode",
+        choices=("none", "mass", "uot", "uot_uniform"),
+        default="none",
+        help=(
+            "Head-aware attention marginal: mass is one-UOT soft head mixing; "
+            "uot and uot_uniform use top visual heads as UOT experts."
+        ),
+    )
+    group.add_argument(
+        "--ot-head-topk", type=int, default=4,
+        help="Visual-attention heads retained per SLA layer for head-UOT.",
+    )
+    group.add_argument(
+        "--ot-head-temperature", type=float, default=0.1,
+        help="Softmax temperature for dynamic head reliability.",
+    )
+    group.add_argument(
+        "--ot-head-uniform-mix", type=float, default=0.0,
+        help="Uniform expert prior for --ot-head-aware-mode uot_uniform.",
+    )
+    group.add_argument(
+        "--ot-head-mass-weight", type=float, default=0.1,
+        help="Log transported-mass reliability coefficient in head-UOT scoring.",
+    )
     return parser
 
 
@@ -258,6 +283,26 @@ def validate_ot_bary_sla_arguments(args):
         raise ValueError("--ot-attention-power must be positive")
     if not 0.0 <= args.ot_attention_uniform_mix < 1.0:
         raise ValueError("--ot-attention-uniform-mix must be in [0, 1)")
+    head_mode = getattr(args, "ot_head_aware_mode", "none")
+    if head_mode != "none" and not args.ot_attention_visual_marginal:
+        raise ValueError(
+            "--ot-head-aware-mode requires --ot-attention-visual-marginal"
+        )
+    if getattr(args, "ot_head_topk", 4) <= 0:
+        raise ValueError("--ot-head-topk must be positive")
+    if getattr(args, "ot_head_temperature", 0.1) <= 0:
+        raise ValueError("--ot-head-temperature must be positive")
+    if not 0.0 <= getattr(args, "ot_head_uniform_mix", 0.0) < 1.0:
+        raise ValueError("--ot-head-uniform-mix must be in [0, 1)")
+    if getattr(args, "ot_head_mass_weight", 0.1) < 0:
+        raise ValueError("--ot-head-mass-weight must be non-negative")
+    if head_mode != "uot_uniform" and getattr(
+        args, "ot_head_uniform_mix", 0.0,
+    ) != 0.0:
+        raise ValueError(
+            "--ot-head-uniform-mix is only valid for --ot-head-aware-mode "
+            "uot_uniform"
+        )
     if args.ot_attention_coverage_beta < 0:
         raise ValueError("--ot-attention-coverage-beta must be non-negative")
     if args.ot_attention_coverage_epsilon <= 0:
@@ -443,6 +488,23 @@ def prepare_common_fileparts(args):
                     file_parts.append("fn")
                 if getattr(args, "ot_bidirectional_timestep_gate", False):
                     file_parts.append("tg")
+                head_mode = getattr(args, "ot_head_aware_mode", "none")
+                if head_mode != "none":
+                    # Result sidecars already approach NAME_MAX for raw-UOT.
+                    # Keep only the varying head hyperparameter in the path;
+                    # the full configuration is retained in the manifest.
+                    if head_mode == "mass":
+                        file_parts.append(
+                            f"hM_t{getattr(args, 'ot_head_temperature', 0.1)}"
+                        )
+                    elif head_mode == "uot":
+                        file_parts.append(
+                            f"hO_t{getattr(args, 'ot_head_temperature', 0.1)}"
+                        )
+                    else:
+                        file_parts.append(
+                            f"hU_u{getattr(args, 'ot_head_uniform_mix', 0.0)}"
+                        )
                 recall_lambda = getattr(args, "ot_recall_reward_lambda", 0.0)
                 recovery_rho = getattr(args, "ot_recall_recovery_rho", 0.0)
                 if recall_lambda or recovery_rho:
