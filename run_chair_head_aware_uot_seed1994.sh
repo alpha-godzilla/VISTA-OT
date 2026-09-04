@@ -22,14 +22,25 @@ export VISTA_COCO_ROOT="${VISTA_COCO_ROOT:-/data/sun_yuxi/datasets/coco}"; expor
 if [[ -z "${HF_HOME:-}" && -z "${HUGGINGFACE_HUB_CACHE:-}" && -d /data/sun_yuxi/huggingface ]]; then export HF_HOME=/data/sun_yuxi/huggingface; fi
 if [[ -z "${VISTA_LLAVA_MODEL_PATH:-}" ]]; then for candidate in /data/sun_yuxi/models/llava-v1.5-7b /data/sun_yuxi/models/llava-1.5-7b-hf /home/ljc/code/models/llava-v1.5-7b; do [[ -f "$candidate/config.json" ]] && { export VISTA_LLAVA_MODEL_PATH="$candidate"; break; }; done; fi
 [[ ${#GPUS[@]} -gt 0 && -d "$VISTA_COCO_ROOT/val2014" && -f "${VISTA_LLAVA_MODEL_PATH:-}/config.json" ]] || { echo "Set GPU_IDS, VISTA_COCO_ROOT, and VISTA_LLAVA_MODEL_PATH." >&2; exit 1; }
-IDS_FILE="$REFERENCE_SWEEP_DIR/manifests/seed_${SEED}_ids.txt"
-[[ -f "$IDS_FILE" && "$(wc -l < "$IDS_FILE")" -eq "$SUBSET_SIZE" ]] || { echo "Missing fixed reference manifest: $IDS_FILE" >&2; exit 1; }
-mkdir -p "$SWEEP_DIR/logs"
+mkdir -p "$SWEEP_DIR/logs" "$SWEEP_DIR/manifests"
+# Reuse the original manifest when it remains available; otherwise create a
+# deterministic seed-specific manifest locally.  This makes the head search
+# runnable even after earlier experiment outputs were cleaned up.
+IDS_FILE="$SWEEP_DIR/manifests/seed_${SEED}_ids.txt"
+REFERENCE_IDS_FILE="$REFERENCE_SWEEP_DIR/manifests/seed_${SEED}_ids.txt"
+if [[ ! -f "$IDS_FILE" || "$(wc -l < "$IDS_FILE")" -ne "$SUBSET_SIZE" ]]; then
+  if [[ -f "$REFERENCE_IDS_FILE" && "$(wc -l < "$REFERENCE_IDS_FILE")" -eq "$SUBSET_SIZE" ]]; then
+    cp "$REFERENCE_IDS_FILE" "$IDS_FILE"
+  else
+    "$PYTHON_BIN" scripts/make_chair_seed_manifest.py --data-path "$VISTA_COCO_ROOT/val2014" --seed "$SEED" --subset-size "$SUBSET_SIZE" --output "$IDS_FILE"
+  fi
+fi
 canonical() { "$PYTHON_BIN" -c 'import sys; print(float(sys.argv[1]))' "$1"; }
 base_stem() { printf 'seed%s_vsv_lambda_%s_logaug_loglayer_%s_logalpha_%s' "$SEED" "$VSV_LAMBDA" "$LOGITS_LAYERS" "$1"; }
 raw_result() { printf '%s/exp_results/%s/%s/%s_otattn_nodust_layerhid_lmhead_tlogit_m%s_kunpooled_it%s_tol%s_eps%s_ltemp%s_apow%s_amix%s_uot_mrel%s_masslayer_dirgate_induni_greedy_max_new_tokens_%s.jsonl' "$SCRIPT_DIR" "$REFERENCE_OT_FOLDER" "$MODEL" "$(base_stem "$1")" "$OT_TOPK" "$OT_SINKHORN_ITERS" "$OT_SINKHORN_TOLERANCE" "$OT_EPSILON" "$OT_LAYER_TEMPERATURE" "$OT_ATTENTION_POWER" "$OT_UNIFORM_MIX" "$2" "$MAX_NEW_TOKENS"; }
 vista_result() { printf '%s/exp_results/%s/%s/%s_greedy_max_new_tokens_%s.jsonl' "$SCRIPT_DIR" "$REFERENCE_VISTA_FOLDER" "$MODEL" "$(base_stem "$1")" "$MAX_NEW_TOKENS"; }
 head_result() { local alpha="$1" rho="$2" tag="$3"; printf '%s/exp_results/%s/%s/%s_otattn_nodust_layerhid_lmhead_tlogit_m%s_kunpooled_it%s_tol%s_eps%s_ltemp%s_apow%s_amix%s_uot_mrel%s_masslayer_dirgate_induni_%s_greedy_max_new_tokens_%s.jsonl' "$SCRIPT_DIR" "$OT_EXP_FOLDER" "$MODEL" "$(base_stem "$alpha")" "$OT_TOPK" "$OT_SINKHORN_ITERS" "$OT_SINKHORN_TOLERANCE" "$OT_EPSILON" "$OT_LAYER_TEMPERATURE" "$OT_ATTENTION_POWER" "$OT_UNIFORM_MIX" "$rho" "$tag" "$MAX_NEW_TOKENS"; }
+fresh_raw_result() { printf '%s/exp_results/%s/%s/%s_otattn_nodust_layerhid_lmhead_tlogit_m%s_kunpooled_it%s_tol%s_eps%s_ltemp%s_apow%s_amix%s_uot_mrel%s_masslayer_dirgate_induni_greedy_max_new_tokens_%s.jsonl' "$SCRIPT_DIR" "$OT_EXP_FOLDER" "$MODEL" "$(base_stem "$1")" "$OT_TOPK" "$OT_SINKHORN_ITERS" "$OT_SINKHORN_TOLERANCE" "$OT_EPSILON" "$OT_LAYER_TEMPERATURE" "$OT_ATTENTION_POWER" "$OT_UNIFORM_MIX" "$2" "$MAX_NEW_TOKENS"; }
 is_complete() { [[ -f "$1" && "$(wc -l < "$1")" -eq "$SUBSET_SIZE" ]]; }
 
 # Older sweeps used different exp_folder names (and, in a few cases, a
@@ -58,8 +69,12 @@ add_row() { local method="$1" setting="$2" alpha="$3" rho="$4" mode="$5" temp="$
 for point in "${WORKPOINTS[@]}"; do
   IFS=: read -r raw_alpha raw_rho <<< "$point"
   alpha="$(canonical "$raw_alpha")"; rho="$(canonical "$raw_rho")"
-  raw_path="$(resolve_existing_result raw "$alpha" "$rho")" || { echo "Missing raw-UOT reference alpha=$alpha rho=$rho (searched exp_results recursively)" >&2; exit 1; }
-  echo "Using raw-UOT control alpha=$alpha rho=$rho: $raw_path"
+  if raw_path="$(resolve_existing_result raw "$alpha" "$rho")"; then
+    echo "Using existing raw-UOT control alpha=$alpha rho=$rho: $raw_path"
+  else
+    raw_path="$(fresh_raw_result "$alpha" "$rho")"
+    echo "Raw-UOT control alpha=$alpha rho=$rho was not found; it will be regenerated: $raw_path"
+  fi
   if vista_path="$(resolve_existing_result vista "$alpha")"; then
     echo "Using VISTA reference alpha=$alpha: $vista_path"
     add_row vista "alpha${alpha}" "$alpha" na none na na "$vista_path"
@@ -69,8 +84,8 @@ for point in "${WORKPOINTS[@]}"; do
   for raw_temp in "${UOT_TEMPERATURES[@]}"; do temp="$(canonical "$raw_temp")"; add_row head_uot "alpha${alpha}_rho${rho}_t${temp}" "$alpha" "$rho" uot "$temp" 0 "$(head_result "$alpha" "$rho" "hO_t${temp}")"; done
   for raw_mix in "${UOT_UNIFORM_MIXES[@]}"; do mix="$(canonical "$raw_mix")"; add_row head_uot_uniform "alpha${alpha}_rho${rho}_u${mix}" "$alpha" "$rho" uot_uniform 0.1 "$mix" "$(head_result "$alpha" "$rho" "hU_u${mix}")"; done
 done
-run_job() { local index="$1" gpu="$2" method="${JOB_METHODS[$index]}" setting="${JOB_SETTINGS[$index]}" alpha="${JOB_ALPHAS[$index]}" rho="${JOB_RHOS[$index]}" mode="${JOB_MODES[$index]}" temp="${JOB_TEMPS[$index]}" mix="${JOB_MIXES[$index]}" result="${JOB_RESULTS[$index]}" backup; local -a args=(--vsv --vsv-lambda "$VSV_LAMBDA" --logits-aug --logits-layers "$LOGITS_LAYERS" --logits-alpha "$alpha" --use-ot-bary-sla --ot-attention-visual-marginal --ot-topk "$OT_TOPK" --ot-sinkhorn-iters "$OT_SINKHORN_ITERS" --ot-sinkhorn-tolerance "$OT_SINKHORN_TOLERANCE" --ot-epsilon "$OT_EPSILON" --ot-layer-temperature "$OT_LAYER_TEMPERATURE" --ot-attention-power "$OT_ATTENTION_POWER" --ot-attention-uniform-mix "$OT_UNIFORM_MIX" --ot-unbalanced --ot-marginal-relaxation "$rho" --ot-mass-aware-layer-weights --ot-direction-aware-gating --ot-independent-uniform-layer-weights --ot-head-aware-mode "$mode" --ot-head-topk "$HEAD_TOPK" --ot-head-temperature "$temp" --ot-head-uniform-mix "$mix" --ot-head-mass-weight "$HEAD_MASS_WEIGHT" --ot-log-stats); [[ -f "$result" ]] && { backup="${result}.partial.$(date +%Y%m%d_%H%M%S)"; mv "$result" "$backup"; }; echo "[GPU $gpu] start method=$method setting=$setting"; CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON_BIN" chair_eval.py --exp_folder "$OT_EXP_FOLDER" --model "$MODEL" --data-path "$VISTA_COCO_ROOT/val2014" --subset-size "$SUBSET_SIZE" --subset-ids-file "$IDS_FILE" --seed "$SEED" --max-new-tokens "$MAX_NEW_TOKENS" "${args[@]}" > "$SWEEP_DIR/logs/${method}_${setting}.log" 2>&1; is_complete "$result" || { echo "Incomplete result: $result" >&2; return 1; }; }
+run_job() { local index="$1" gpu="$2" method="${JOB_METHODS[$index]}" setting="${JOB_SETTINGS[$index]}" alpha="${JOB_ALPHAS[$index]}" rho="${JOB_RHOS[$index]}" mode="${JOB_MODES[$index]}" temp="${JOB_TEMPS[$index]}" mix="${JOB_MIXES[$index]}" result="${JOB_RESULTS[$index]}" backup; local -a args=(--vsv --vsv-lambda "$VSV_LAMBDA" --logits-aug --logits-layers "$LOGITS_LAYERS" --logits-alpha "$alpha" --use-ot-bary-sla --ot-attention-visual-marginal --ot-topk "$OT_TOPK" --ot-sinkhorn-iters "$OT_SINKHORN_ITERS" --ot-sinkhorn-tolerance "$OT_SINKHORN_TOLERANCE" --ot-epsilon "$OT_EPSILON" --ot-layer-temperature "$OT_LAYER_TEMPERATURE" --ot-attention-power "$OT_ATTENTION_POWER" --ot-attention-uniform-mix "$OT_UNIFORM_MIX" --ot-unbalanced --ot-marginal-relaxation "$rho" --ot-mass-aware-layer-weights --ot-direction-aware-gating --ot-independent-uniform-layer-weights --ot-log-stats); if [[ "$mode" != none ]]; then args+=(--ot-head-aware-mode "$mode" --ot-head-topk "$HEAD_TOPK" --ot-head-temperature "$temp" --ot-head-uniform-mix "$mix" --ot-head-mass-weight "$HEAD_MASS_WEIGHT"); fi; [[ -f "$result" ]] && { backup="${result}.partial.$(date +%Y%m%d_%H%M%S)"; mv "$result" "$backup"; }; echo "[GPU $gpu] start method=$method setting=$setting"; CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON_BIN" chair_eval.py --exp_folder "$OT_EXP_FOLDER" --model "$MODEL" --data-path "$VISTA_COCO_ROOT/val2014" --subset-size "$SUBSET_SIZE" --subset-ids-file "$IDS_FILE" --seed "$SEED" --max-new-tokens "$MAX_NEW_TOKENS" "${args[@]}" > "$SWEEP_DIR/logs/${method}_${setting}.log" 2>&1; is_complete "$result" || { echo "Incomplete result: $result" >&2; return 1; }; }
 run_worker() { local worker="$1" index; for ((index=worker; index<${#JOB_METHODS[@]}; index+=${#GPUS[@]})); do run_job "$index" "${GPUS[$worker]}"; done; }
-echo "Head-aware UOT: ${#JOB_METHODS[@]} pending jobs (24 new expected) on GPUs ${GPUS[*]}"; failed=0; if (( ${#JOB_METHODS[@]} > 0 )); then declare -a PIDS=(); for ((worker=0; worker<${#GPUS[@]} && worker<${#JOB_METHODS[@]}; worker+=1)); do run_worker "$worker" & PIDS+=("$!"); done; for pid in "${PIDS[@]}"; do wait "$pid" || failed=1; done; fi; (( failed == 0 )) || { echo "Generation failed; see $SWEEP_DIR/logs" >&2; exit 1; }
+echo "Head-aware UOT: ${#JOB_METHODS[@]} pending jobs (24 head-aware jobs plus any missing raw controls) on GPUs ${GPUS[*]}"; failed=0; if (( ${#JOB_METHODS[@]} > 0 )); then declare -a PIDS=(); for ((worker=0; worker<${#GPUS[@]} && worker<${#JOB_METHODS[@]}; worker+=1)); do run_worker "$worker" & PIDS+=("$!"); done; for pid in "${PIDS[@]}"; do wait "$pid" || failed=1; done; fi; (( failed == 0 )) || { echo "Generation failed; see $SWEEP_DIR/logs" >&2; exit 1; }
 while IFS=$'\t' read -r method setting seed alpha rho temp mix topk mass gpu ids result chair_json stats_jsonl; do [[ "$method" == method ]] && continue; if [[ ! -f "$chair_json" || "$chair_json" -ot "$result" ]]; then "$PYTHON_BIN" chair_ans.py --cap_file "$result" --coco_path "$VISTA_COCO_ROOT/annotations" --cache "$VISTA_COCO_ROOT/chair.pkl" --save_path "$chair_json" > "$SWEEP_DIR/logs/chair_${method}_${setting}.log" 2>&1; fi; done < "$MANIFEST"
 "$PYTHON_BIN" scripts/summarize_head_aware_uot_grid.py --manifest "$MANIFEST" --summary-csv "$SWEEP_DIR/summary.csv" --markdown "$SWEEP_DIR/summary.md"; echo "Head-aware UOT complete: $SWEEP_DIR/summary.md"
