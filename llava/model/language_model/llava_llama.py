@@ -125,6 +125,11 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                         self.ot_bary_sla.cache_layer_visual_features(
                             decoded_hidden_states
                         )
+                        if self.ot_bary_sla.head_aware_mode == "contribution":
+                            self.ot_bary_sla.cache_layer_head_visual_values(
+                                [outputs.hidden_states[idx] for idx in tar_layers],
+                                [self.model.layers[idx].self_attn for idx in tar_layers],
+                            )
                     # Generation only consumes the current token's logits. This
                     # avoids materializing [B, w, sequence, vocab] at prefill.
                     early_logits = torch.stack(

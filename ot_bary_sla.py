@@ -366,7 +366,7 @@ class OTBarySLA:
                 "Bidirectional timestep gating requires final-norm alignment"
             )
         if head_aware_mode not in {
-            "none", "mass", "topmass", "uot", "uot_uniform",
+            "none", "mass", "topmass", "contribution", "uot", "uot_uniform", "uot_equal",
         }:
             raise ValueError(f"Unknown head-aware mode: {head_aware_mode}")
         if head_aware_mode != "none" and not attention_visual_marginal:
@@ -443,6 +443,8 @@ class OTBarySLA:
         self._visual_local: Optional[torch.Tensor] = None
         self._visual_attention_positions: Optional[torch.Tensor] = None
         self._layer_visual_features: Optional[torch.Tensor] = None
+        self._layer_head_visual_values: Optional[torch.Tensor] = None
+        self._layer_head_output_grams: Optional[torch.Tensor] = None
         self._stats: Dict[str, torch.Tensor] = {}
         self._stats_steps = 0
         self._attention_trace: List[Dict[str, object]] = []
@@ -457,6 +459,8 @@ class OTBarySLA:
         self._visual_local = None
         self._visual_attention_positions = None
         self._layer_visual_features = None
+        self._layer_head_visual_values = None
+        self._layer_head_output_grams = None
         self._stats = {}
         self._stats_steps = 0
         self._attention_trace = []
@@ -515,6 +519,8 @@ class OTBarySLA:
         self._stats = {}
         self._stats_steps = 0
         self._layer_visual_features = None
+        self._layer_head_visual_values = None
+        self._layer_head_output_grams = None
         self._attention_trace = []
         self._attention_coverage = None
 
@@ -770,6 +776,43 @@ class OTBarySLA:
                 + self.attention_uniform_mix / visual_tokens
             )
         return source, visual_mass
+
+    def cache_layer_head_visual_values(self, layer_inputs, attention_modules):
+        """Cache prefill visual Value vectors and per-head output Gram matrices."""
+        if self._visual_attention_positions is None:
+            raise RuntimeError("Cache visual attention positions before head values")
+        values, grams = [], []
+        positions = self._visual_attention_positions
+        for hidden, module in zip(layer_inputs, attention_modules):
+            heads = module.num_heads
+            kv_heads = getattr(module, "num_key_value_heads", heads)
+            head_dim = module.head_dim
+            raw = module.v_proj(hidden).view(hidden.shape[0], hidden.shape[1], kv_heads, head_dim)
+            if heads != kv_heads:
+                raw = raw.repeat_interleave(heads // kv_heads, dim=2)
+            samples = [raw[index, positions[index]].transpose(0, 1) for index in range(hidden.shape[0])]
+            values.append(torch.stack(samples))
+            blocks = module.o_proj.weight.float().t().view(heads, head_dim, -1)
+            grams.append(torch.bmm(blocks, blocks.transpose(1, 2)))
+        self._layer_head_visual_values = torch.stack(values, dim=1).detach().half()
+        self._layer_head_output_grams = torch.stack(grams, dim=0).detach()
+
+    def _head_contribution_scores(self, attentions, layer_indices, batch_size, visual_tokens):
+        if self._layer_head_visual_values is None or self._layer_head_output_grams is None:
+            raise RuntimeError("Contribution head mode requires cached prefill Value vectors")
+        raw = []
+        for attention in [attentions[index] for index in layer_indices]:
+            current = attention.float()[:, :, -1, :]
+            positions = self._expanded_attention_positions(batch_size, current.shape[-1]).to(current.device)
+            raw.append(torch.stack([current[index, :, positions[index]] for index in range(batch_size)]))
+        weights = torch.stack(raw, dim=1)
+        values = self._layer_head_visual_values.to(device=weights.device, dtype=weights.dtype)
+        grams = self._layer_head_output_grams.to(device=weights.device, dtype=weights.dtype)
+        if values.shape[:4] != weights.shape or values.shape[-2] != visual_tokens:
+            raise RuntimeError("Cached visual Values do not match current attention heads")
+        written = torch.einsum("bwhk,bwhkd->bwhd", weights, values)
+        energy = torch.einsum("bwhd,whde,bwhe->bwh", written, grams, written)
+        return energy.clamp_min(0).sqrt()
 
     def _top_candidate_ids(
         self,
@@ -1202,14 +1245,17 @@ class OTBarySLA:
                         source_marginal = (
                             head_sources * head_weights.unsqueeze(-1)
                         ).sum(dim=2)
-                    elif self.head_aware_mode == "topmass":
+                    elif self.head_aware_mode in {"topmass", "contribution"}:
                         # This is deliberately not a temperature router:
                         # retain only the top-M visual-mass heads, then pool
                         # their *raw* visual mass before one UOT solve.  It
                         # isolates coverage loss from per-head UOT/fusion.
                         head_count = head_sources.shape[2]
                         selected_count = min(self.head_topk, head_count)
-                        head_selected_indices = head_visual_mass.topk(
+                        selector_score = head_visual_mass if self.head_aware_mode == "topmass" else self._head_contribution_scores(
+                            attentions, attention_layer_indices, batch_size, visual_nodes,
+                        )
+                        head_selected_indices = selector_score.topk(
                             selected_count, dim=-1,
                         ).indices
                         selected_sources = torch.gather(
@@ -1220,12 +1266,10 @@ class OTBarySLA:
                             ),
                         )
                         selected_mass = torch.gather(
-                            head_visual_mass, dim=2,
+                            selector_score, dim=2,
                             index=head_selected_indices,
                         )
-                        head_weights = selected_mass / selected_mass.sum(
-                            dim=-1, keepdim=True,
-                        ).clamp_min(torch.finfo(torch.float32).tiny)
+                        head_weights = selected_mass / selected_mass.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(torch.float32).tiny)
                         source_marginal = (
                             selected_sources * head_weights.unsqueeze(-1)
                         ).sum(dim=2)
@@ -1257,7 +1301,7 @@ class OTBarySLA:
             )
             transport_cost = cost.clamp(0.0, 2.0) if self.unbalanced else cost
             transport_diagnostics = None
-            if self.head_aware_mode in {"uot", "uot_uniform"}:
+            if self.head_aware_mode in {"uot", "uot_uniform", "uot_equal"}:
                 if head_sources is None or head_visual_mass is None:
                     raise RuntimeError("Head-UOT requires head attention sources")
                 head_count = head_sources.shape[2]
@@ -1313,9 +1357,14 @@ class OTBarySLA:
                         torch.finfo(torch.float32).tiny
                     ).log()
                 )
-                head_weights = torch.softmax(
-                    head_scores / self.head_temperature, dim=-1,
-                )
+                if self.head_aware_mode == "uot_equal":
+                    head_weights = torch.full_like(
+                        head_scores, 1.0 / selected_count,
+                    )
+                else:
+                    head_weights = torch.softmax(
+                        head_scores / self.head_temperature, dim=-1,
+                    )
                 if self.head_aware_mode == "uot_uniform":
                     head_weights = (
                         (1.0 - self.head_uniform_mix) * head_weights
