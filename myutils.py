@@ -238,11 +238,12 @@ def add_ot_bary_sla_arguments(parser):
     )
     group.add_argument(
         "--ot-head-aware-mode",
-        choices=("none", "mass", "uot", "uot_uniform"),
+        choices=("none", "mass", "topmass", "uot", "uot_uniform"),
         default="none",
         help=(
-            "Head-aware attention marginal: mass is one-UOT soft head mixing; "
-            "uot and uot_uniform use top visual heads as UOT experts."
+            "Head-aware attention marginal: mass is all-head one-UOT mixing; "
+            "topmass is mass-preserving top-head one-UOT mixing; uot and "
+            "uot_uniform use top visual heads as UOT experts."
         ),
     )
     group.add_argument(
@@ -496,6 +497,10 @@ def prepare_common_fileparts(args):
                     if head_mode == "mass":
                         file_parts.append(
                             f"hM_t{getattr(args, 'ot_head_temperature', 0.1)}"
+                        )
+                    elif head_mode == "topmass":
+                        file_parts.append(
+                            f"hT_k{getattr(args, 'ot_head_topk', 4)}"
                         )
                     elif head_mode == "uot":
                         file_parts.append(

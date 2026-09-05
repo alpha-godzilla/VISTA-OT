@@ -365,7 +365,9 @@ class OTBarySLA:
             raise ValueError(
                 "Bidirectional timestep gating requires final-norm alignment"
             )
-        if head_aware_mode not in {"none", "mass", "uot", "uot_uniform"}:
+        if head_aware_mode not in {
+            "none", "mass", "topmass", "uot", "uot_uniform",
+        }:
             raise ValueError(f"Unknown head-aware mode: {head_aware_mode}")
         if head_aware_mode != "none" and not attention_visual_marginal:
             raise ValueError(
@@ -1199,6 +1201,33 @@ class OTBarySLA:
                         )
                         source_marginal = (
                             head_sources * head_weights.unsqueeze(-1)
+                        ).sum(dim=2)
+                    elif self.head_aware_mode == "topmass":
+                        # This is deliberately not a temperature router:
+                        # retain only the top-M visual-mass heads, then pool
+                        # their *raw* visual mass before one UOT solve.  It
+                        # isolates coverage loss from per-head UOT/fusion.
+                        head_count = head_sources.shape[2]
+                        selected_count = min(self.head_topk, head_count)
+                        head_selected_indices = head_visual_mass.topk(
+                            selected_count, dim=-1,
+                        ).indices
+                        selected_sources = torch.gather(
+                            head_sources,
+                            dim=2,
+                            index=head_selected_indices.unsqueeze(-1).expand(
+                                -1, -1, -1, visual_nodes,
+                            ),
+                        )
+                        selected_mass = torch.gather(
+                            head_visual_mass, dim=2,
+                            index=head_selected_indices,
+                        )
+                        head_weights = selected_mass / selected_mass.sum(
+                            dim=-1, keepdim=True,
+                        ).clamp_min(torch.finfo(torch.float32).tiny)
+                        source_marginal = (
+                            selected_sources * head_weights.unsqueeze(-1)
                         ).sum(dim=2)
                     else:
                         # Filled after target marginals are available: UOT

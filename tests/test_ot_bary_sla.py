@@ -762,6 +762,36 @@ class OTBarySLATests(unittest.TestCase):
             details["source_marginal"].sum(dim=-1), torch.ones(1, 2),
         )
 
+    def test_topmass_keeps_only_top_visual_heads_before_one_uot(self):
+        method = OTBarySLA(
+            topk=2, visual_tokens=4, epsilon=0.1, sinkhorn_iters=20,
+            attention_visual_marginal=True, attention_power=1.0,
+            attention_uniform_mix=0.0, head_aware_mode="topmass",
+            head_topk=1,
+        )
+        method.cache_visual_features(torch.randn(1, 4, 12))
+        method.cache_visual_attention_positions(
+            torch.tensor([[False, True, True, True, True, False]])
+        )
+        hidden = torch.randn(1, 6, 12)
+        method.cache_layer_visual_features((hidden, hidden.clone()))
+        attention = torch.zeros(1, 2, 1, 6)
+        attention[:, 0, 0, 1] = 0.7
+        attention[:, 0, 0, 2] = 0.2
+        attention[:, 1, 0, 3] = 0.1
+        attention[:, 1, 0, 0] = 0.9
+        _, details = method.compute_layer_weights(
+            self.early_logits[:1, :2], self.embedding, return_details=True,
+            attentions=(attention, attention.clone()),
+            attention_layer_indices=(0, 1),
+            output_embedding_weight=self.embedding,
+        )
+        self.assertEqual(details["head_selected_indices"].shape, (1, 2, 1))
+        self.assertTrue((details["head_selected_indices"] == 0).all())
+        torch.testing.assert_close(
+            details["head_weights"], torch.ones(1, 2, 1),
+        )
+
     def test_uot_head_experts_mix_plans_and_respect_uniform_prior(self):
         method = OTBarySLA(
             topk=2, visual_tokens=4, epsilon=0.1, sinkhorn_iters=30,
