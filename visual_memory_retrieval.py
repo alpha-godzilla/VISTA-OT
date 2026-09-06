@@ -22,8 +22,15 @@ METRIC_NAMES = (
     "C_V", "C_P", "C_G", "L_GV", "compat_GV", "compat_PV",
     "query_effect", "new_K_effect", "m_V", "m_P", "m_G",
     "reconstruction_error", "L_GV_identity_error",
+    "size_effect", "net_compat_effect", "total_effect", "mass_ratio_log",
+    "mass_ratio_change", "mass_ratio_decomposition_error",
+    "compensation_margin", "net_pressure", "query_content_effect",
+    "query_position_effect", "query_rope_decomposition_error",
 )
-VALID_NAMES = ("has_V", "has_P", "has_G", "query_effect_valid", "new_K_effect_valid")
+VALID_NAMES = (
+    "has_V", "has_P", "has_G", "query_effect_valid", "new_K_effect_valid",
+    "mass_ratio_decomposition_valid", "query_rope_decomposition_valid",
+)
 
 
 def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
@@ -168,6 +175,9 @@ class RetrievalShiftTracer:
         self.token_rows = []
         self.state: Dict[int, Dict[str, torch.Tensor]] = {}
         self.prev_query: Dict[int, torch.Tensor] = {}
+        self.prev_query_pre: Dict[int, torch.Tensor] = {}
+        self.prev_mass_ratio: Dict[int, torch.Tensor] = {}
+        self.sample_prompt = ""
 
     @staticmethod
     def _parse_debug(value):
@@ -194,7 +204,7 @@ class RetrievalShiftTracer:
         self.handles = []
         self.state.clear()
 
-    def start_sample(self, sample_id: int):
+    def start_sample(self, sample_id: int, prompt: str = ""):
         if self.sample_id is not None:
             raise RuntimeError("finish_sample must be called before start_sample")
         self.sample_id = int(sample_id)
@@ -203,6 +213,9 @@ class RetrievalShiftTracer:
         self.prefix_visual_mask = None
         self.prefix_length = None
         self.prev_query = {}
+        self.prev_query_pre = {}
+        self.prev_mass_ratio = {}
+        self.sample_prompt = prompt
 
     def begin_forward(self, input_ids, visual_position_mask, is_prefill: bool):
         """Called by LLaVA immediately before the decoder layers."""
@@ -269,7 +282,9 @@ class RetrievalShiftTracer:
             q_post, k_post = apply_rotary_pos_emb(q_pre, k_pre, cos, sin, position_ids)
             self.state[layer_idx] = {
                 "q_pre": q_pre.detach(), "k_pre": k_pre.detach(), "v_pre": v_pre.detach(),
-                "q_post": q_post.detach(), "k_post": k_post.detach(), "past_length": torch.tensor(past_length),
+                "q_post": q_post.detach(), "k_post": k_post.detach(),
+                "cos": cos.detach(), "sin": sin.detach(), "position_ids": position_ids.detach(),
+                "past_length": torch.tensor(past_length),
             }
         return hook
 
@@ -333,16 +348,72 @@ class RetrievalShiftTracer:
                 prev = retrieval_group_metrics(self.prev_query[layer_idx], key[:, :-1], value[:, :-1], visual[:-1], prompt[:-1], prior_generated[:-1])
                 query_effect = old["compat_GV"] - prev["compat_GV"]
                 new_k_effect = metrics["compat_GV"] - old["compat_GV"]
+                # Algebraic RoPE path decomposition, not a unique causal
+                # attribution.  It rotates the prior content query at the
+                # current position before comparing with the same old memory.
+                prior_pre = self.prev_query_pre[layer_idx][None, :, None, :]
+                rotated_prior, _ = apply_rotary_pos_emb(
+                    prior_pre,
+                    state["k_pre"],
+                    state["cos"],
+                    state["sin"],
+                    state["position_ids"],
+                )
+                rotated_prior = rotated_prior[0, :, 0, :]
+                rotated_prev = retrieval_group_metrics(
+                    rotated_prior, key[:, :-1], value[:, :-1],
+                    visual[:-1], prompt[:-1], prior_generated[:-1],
+                )
+                query_content_effect = old["compat_GV"] - rotated_prev["compat_GV"]
+                query_position_effect = rotated_prev["compat_GV"] - prev["compat_GV"]
+                query_rope_decomposition_error = (
+                    query_effect - query_content_effect - query_position_effect
+                )
             else:
                 query_effect = torch.zeros_like(metrics["compat_GV"])
                 new_k_effect = torch.zeros_like(metrics["compat_GV"])
+                query_content_effect = torch.zeros_like(metrics["compat_GV"])
+                query_position_effect = torch.zeros_like(metrics["compat_GV"])
+                query_rope_decomposition_error = torch.zeros_like(metrics["compat_GV"])
+            mass_ratio_valid = valid_effect and layer_idx in self.prev_mass_ratio
+            if mass_ratio_valid:
+                size_effect = torch.full_like(
+                    metrics["compat_GV"],
+                    math.log(float(generated.sum()) / float(prior_generated.sum())),
+                )
+                net_compat_effect = query_effect + new_k_effect
+                total_effect = size_effect + net_compat_effect
+                mass_ratio_change = metrics["L_GV"] - self.prev_mass_ratio[layer_idx]
+                mass_ratio_decomposition_error = mass_ratio_change - total_effect
+            else:
+                size_effect = torch.zeros_like(metrics["compat_GV"])
+                net_compat_effect = torch.zeros_like(metrics["compat_GV"])
+                total_effect = torch.zeros_like(metrics["compat_GV"])
+                mass_ratio_change = torch.zeros_like(metrics["compat_GV"])
+                mass_ratio_decomposition_error = torch.zeros_like(metrics["compat_GV"])
+            compensation_margin = -query_effect - new_k_effect
             self.prev_query[layer_idx] = q.detach()
+            self.prev_query_pre[layer_idx] = state["q_pre"][0, :, -1, :].detach()
+            self.prev_mass_ratio[layer_idx] = metrics["L_GV"].detach()
             row = {name: metrics[name].float().cpu().numpy() for name in METRIC_NAMES if name in metrics}
             row["query_effect"] = query_effect.float().cpu().numpy()
             row["new_K_effect"] = new_k_effect.float().cpu().numpy()
+            row["size_effect"] = size_effect.float().cpu().numpy()
+            row["net_compat_effect"] = net_compat_effect.float().cpu().numpy()
+            row["total_effect"] = total_effect.float().cpu().numpy()
+            row["mass_ratio_log"] = metrics["L_GV"].float().cpu().numpy()
+            row["mass_ratio_change"] = mass_ratio_change.float().cpu().numpy()
+            row["mass_ratio_decomposition_error"] = mass_ratio_decomposition_error.float().cpu().numpy()
+            row["compensation_margin"] = compensation_margin.float().cpu().numpy()
+            row["net_pressure"] = net_compat_effect.float().cpu().numpy()
+            row["query_content_effect"] = query_content_effect.float().cpu().numpy()
+            row["query_position_effect"] = query_position_effect.float().cpu().numpy()
+            row["query_rope_decomposition_error"] = query_rope_decomposition_error.float().cpu().numpy()
             row.update({name: metrics[name].bool().cpu().numpy() for name in ("has_V", "has_P", "has_G")})
             row["query_effect_valid"] = np.full(attn.num_heads, valid_effect, dtype=np.bool_)
             row["new_K_effect_valid"] = np.full(attn.num_heads, valid_effect, dtype=np.bool_)
+            row["mass_ratio_decomposition_valid"] = np.full(attn.num_heads, mass_ratio_valid, dtype=np.bool_)
+            row["query_rope_decomposition_valid"] = np.full(attn.num_heads, valid_effect, dtype=np.bool_)
             row.update({"timestep": context.timestep, "layer": layer_idx, "n_V": int(visual.sum()), "n_P": int(prompt.sum()), "n_G": int(generated.sum())})
             self.rows.append(row)
             self._maybe_dump_debug(layer_idx, context, state, q, key, value, visual, prompt, generated)
@@ -366,7 +437,7 @@ class RetrievalShiftTracer:
             visual_mask=visual.cpu().numpy(), prompt_mask=prompt.cpu().numpy(), generated_mask=generated.cpu().numpy(),
         )
 
-    def finish_sample(self):
+    def finish_sample(self, generated_token_ids=None, generated_text: str = ""):
         if self.sample_id is None:
             return None
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -386,11 +457,35 @@ class RetrievalShiftTracer:
                     validity[name][t, layer] = row[name]
                 for name in counts:
                     counts[name][t, layer] = row[name]
-            token_ids = np.asarray([x[0] for x in self.token_rows], dtype=np.int64)
-            token_text = np.asarray([x[1] for x in self.token_rows], dtype="U")
+            if generated_token_ids is not None:
+                token_ids = np.asarray(generated_token_ids, dtype=np.int64)
+                if token_ids.size != timesteps:
+                    raise RuntimeError(
+                        "Prediction/token alignment failure: tracer has "
+                        f"{timesteps} query timesteps but generation returned {token_ids.size} tokens"
+                    )
+                token_text = np.asarray([
+                    self.tokenizer.decode([int(token)], clean_up_tokenization_spaces=False)
+                    for token in token_ids
+                ], dtype="U")
+            else:
+                token_ids = np.asarray([x[0] for x in self.token_rows], dtype=np.int64)
+                token_text = np.asarray([x[1] for x in self.token_rows], dtype="U")
             np.savez_compressed(output, token_ids=token_ids, token_text=token_text, **arrays, **validity, **counts)
             sidecar = output.with_suffix(".json")
-            sidecar.write_text(json.dumps({"sample_id": self.sample_id, "prefix_length": self.prefix_length, "format": "[timestep, layer, head]", "metric_names": METRIC_NAMES, "validity_names": VALID_NAMES}, indent=2))
+            sidecar.write_text(json.dumps({
+                "sample_id": self.sample_id,
+                "prompt": self.sample_prompt,
+                "generated_text": generated_text,
+                "prefix_length": self.prefix_length,
+                "format": "[prediction timestep, layer, head]",
+                "token_alignment": (
+                    "token_ids[t] is the next token predicted by q_t; t=0 is "
+                    "the prefill final-prompt query and t>0 consumes token_ids[t-1]"
+                ),
+                "metric_names": METRIC_NAMES,
+                "validity_names": VALID_NAMES,
+            }, indent=2))
         self.sample_id = None
         self.pending = None
         return output

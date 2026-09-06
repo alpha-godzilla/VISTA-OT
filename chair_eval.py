@@ -120,6 +120,7 @@ def main(args):
     # get model loader
     model_loader = ModelLoader(args.model)
     retrieval_shift_tracer = None
+    trace_generation_file = None
     if args.retrieval_shift_trace_dir is not None:
         from visual_memory_retrieval import RetrievalShiftTracer
 
@@ -131,6 +132,11 @@ def main(args):
         )
         retrieval_shift_tracer.install()
         model_loader.llm_model.retrieval_shift_tracer = retrieval_shift_tracer
+        os.makedirs(args.retrieval_shift_trace_dir, exist_ok=True)
+        trace_generation_file = open(
+            os.path.join(args.retrieval_shift_trace_dir, "generation.jsonl"),
+            "a", encoding="utf-8",
+        )
     # get dataloader
     fixed_image_ids = None
     if args.subset_ids_file is not None:
@@ -164,9 +170,9 @@ def main(args):
             img_id = data["img_id"]
             image = data["image"]
             batch_size = img_id.shape[0]
-            if retrieval_shift_tracer is not None:
-                retrieval_shift_tracer.start_sample(int(img_id[0]))
             query = ["Please help me describe the image in detail."] * batch_size
+            if retrieval_shift_tracer is not None:
+                retrieval_shift_tracer.start_sample(int(img_id[0]), prompt=query[0])
 
             with myutils.maybe_autocast(args.model, model_loader.vlm_model.device):
                 # prepare inputs
@@ -195,6 +201,7 @@ def main(args):
                     kwargs['top_k'] = args.top_k
 
                 # generate
+                generation_input_length = kwargs["input_ids"].shape[1]
                 outputs = model_loader.llm_model.generate(
                     do_sample=args.do_sample,
                     max_new_tokens=args.max_new_tokens,
@@ -219,8 +226,25 @@ def main(args):
             output_text = model_loader.decode(outputs)
 
         if retrieval_shift_tracer is not None:
-            trace_path = retrieval_shift_tracer.finish_sample()
+            sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
+            generated_ids = sequences[0, generation_input_length:].detach().cpu().tolist()
+            trace_path = retrieval_shift_tracer.finish_sample(
+                generated_token_ids=generated_ids,
+                generated_text=output_text[0],
+            )
             print(f"Wrote retrieval-shift trace to {trace_path}")
+            trace_generation_file.write(json.dumps({
+                "sample_id": int(img_id[0]),
+                "prompt": query[0],
+                "generated_text": output_text[0],
+                "generated_token_ids": generated_ids,
+                "generated_tokens": [
+                    model_loader.tokenizer.decode([token], clean_up_tokenization_spaces=False)
+                    for token in generated_ids
+                ],
+                "token_alignment": "generated token index j is predicted by q timestep j",
+            }) + "\n")
+            trace_generation_file.flush()
 
         # write to file
         for i in range(len(output_text)):
@@ -243,6 +267,7 @@ def main(args):
     if retrieval_shift_tracer is not None:
         retrieval_shift_tracer.remove()
         del model_loader.llm_model.retrieval_shift_tracer
+        trace_generation_file.close()
     if args.retrieval_shift_summary_file is not None:
         from visual_memory_retrieval import merge_trace_directory
 
