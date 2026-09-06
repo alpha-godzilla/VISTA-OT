@@ -31,6 +31,15 @@ VALID_NAMES = (
     "has_V", "has_P", "has_G", "query_effect_valid", "new_K_effect_valid",
     "mass_ratio_decomposition_valid", "query_rope_decomposition_valid",
 )
+COMPACT_METRIC_NAMES = (
+    "size_effect", "query_effect", "new_K_effect", "net_pressure",
+    "compensation_margin", "compat_GV", "compat_PV", "m_V", "m_P",
+    "m_G", "mass_ratio_log", "query_content_effect", "query_position_effect",
+)
+COMPACT_VALID_NAMES = (
+    "has_G", "query_effect_valid", "mass_ratio_decomposition_valid",
+    "query_rope_decomposition_valid",
+)
 
 
 def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
@@ -45,13 +54,23 @@ def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
     if not files:
         raise FileNotFoundError(f"No sample_*.npz traces in {trace_dir}")
     columns = {"sample_id": [], "timestep": [], "layer": [], "head": [], "token_id": [], "token_text": []}
-    for name in METRIC_NAMES + VALID_NAMES + ("n_V", "n_P", "n_G"):
-        columns[name] = []
+    available_metrics = None
+    available_validity = None
     for path in files:
         with np.load(path, allow_pickle=False) as data:
+            metrics = tuple(name for name in METRIC_NAMES if name in data)
+            validity_names = tuple(name for name in VALID_NAMES if name in data)
+            if available_metrics is None:
+                available_metrics, available_validity = metrics, validity_names
+                for name in metrics + validity_names + ("n_V", "n_P", "n_G"):
+                    columns[name] = []
+            elif metrics != available_metrics or validity_names != available_validity:
+                raise ValueError("Cannot merge full and compact trace files in one summary")
             sample_id = int(path.stem.removeprefix("sample_"))
             # Metrics are [T,L,H]; group counts are [T,L].
-            shape = data["C_V"].shape
+            if not metrics:
+                raise ValueError(f"No metric arrays in {path}")
+            shape = data[metrics[0]].shape
             if len(shape) != 3:
                 raise ValueError(f"Unexpected trace shape in {path}: {shape}")
             t, layer, head = np.indices(shape)
@@ -65,7 +84,7 @@ def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
             token_text = np.repeat(token_text, shape[2], axis=2)
             columns["token_id"].append(token_ids.reshape(-1))
             columns["token_text"].append(token_text.reshape(-1))
-            for name in METRIC_NAMES + VALID_NAMES:
+            for name in metrics + validity_names:
                 columns[name].append(data[name].reshape(-1))
             for name in ("n_V", "n_P", "n_G"):
                 columns[name].append(np.repeat(data[name][:, :, None], shape[2], axis=2).reshape(-1))
@@ -74,8 +93,8 @@ def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
     output.with_suffix(".json").write_text(json.dumps({
         "format": "flat sample_id,timestep,layer,head table",
         "records": int(sum(chunk.size for chunk in columns["sample_id"])),
-        "metrics": METRIC_NAMES,
-        "validity": VALID_NAMES,
+        "metrics": available_metrics,
+        "validity": available_validity,
         "source_dir": str(trace_dir),
     }, indent=2))
     return output
@@ -161,11 +180,12 @@ class _ForwardContext:
 class RetrievalShiftTracer:
     """Hook-based per-layer/head retrieval-shift measurement for batch size one."""
 
-    def __init__(self, model, tokenizer, output_dir: Path, debug: Optional[str] = None):
+    def __init__(self, model, tokenizer, output_dir: Path, debug: Optional[str] = None, compact: bool = False):
         self.model = model
         self.tokenizer = tokenizer
         self.output_dir = Path(output_dir)
         self.debug = self._parse_debug(debug)
+        self.compact = compact
         self.handles = []
         self.pending: Optional[_ForwardContext] = None
         self.prefix_visual_mask: Optional[torch.Tensor] = None
@@ -446,14 +466,17 @@ class RetrievalShiftTracer:
             timesteps = max(row["timestep"] for row in self.rows) + 1
             layers = len(self.model.model.layers)
             heads = self.model.config.num_attention_heads
-            arrays = {name: np.zeros((timesteps, layers, heads), dtype=np.float32) for name in METRIC_NAMES}
-            validity = {name: np.zeros((timesteps, layers, heads), dtype=np.bool_) for name in VALID_NAMES}
+            stored_metrics = COMPACT_METRIC_NAMES if self.compact else METRIC_NAMES
+            stored_validity = COMPACT_VALID_NAMES if self.compact else VALID_NAMES
+            metric_dtype = np.float16 if self.compact else np.float32
+            arrays = {name: np.zeros((timesteps, layers, heads), dtype=metric_dtype) for name in stored_metrics}
+            validity = {name: np.zeros((timesteps, layers, heads), dtype=np.bool_) for name in stored_validity}
             counts = {name: np.zeros((timesteps, layers), dtype=np.int32) for name in ("n_V", "n_P", "n_G")}
             for row in self.rows:
                 t, layer = row["timestep"], row["layer"]
-                for name in METRIC_NAMES:
+                for name in stored_metrics:
                     arrays[name][t, layer] = row[name]
-                for name in VALID_NAMES:
+                for name in stored_validity:
                     validity[name][t, layer] = row[name]
                 for name in counts:
                     counts[name][t, layer] = row[name]
@@ -472,6 +495,24 @@ class RetrievalShiftTracer:
                 token_ids = np.asarray([x[0] for x in self.token_rows], dtype=np.int64)
                 token_text = np.asarray([x[1] for x in self.token_rows], dtype="U")
             np.savez_compressed(output, token_ids=token_ids, token_text=token_text, **arrays, **validity, **counts)
+            sanity = {
+                "sample_id": self.sample_id,
+                "max_reconstruction_error": max(float(np.abs(row["reconstruction_error"]).max()) for row in self.rows),
+                "max_L_GV_identity_error": max(float(np.abs(row["L_GV_identity_error"]).max()) for row in self.rows),
+                "max_mass_ratio_decomposition_error": max(
+                    (float(np.abs(row["mass_ratio_decomposition_error"]).max())
+                     for row in self.rows if row["mass_ratio_decomposition_valid"].any()),
+                    default=0.0,
+                ),
+                "max_query_rope_decomposition_error": max(
+                    (float(np.abs(row["query_rope_decomposition_error"]).max())
+                     for row in self.rows if row["query_rope_decomposition_valid"].any()),
+                    default=0.0,
+                ),
+                "compact": self.compact,
+            }
+            with (self.output_dir / "sanity.jsonl").open("a", encoding="utf-8") as sanity_file:
+                sanity_file.write(json.dumps(sanity) + "\n")
             sidecar = output.with_suffix(".json")
             sidecar.write_text(json.dumps({
                 "sample_id": self.sample_id,
@@ -483,8 +524,9 @@ class RetrievalShiftTracer:
                     "token_ids[t] is the next token predicted by q_t; t=0 is "
                     "the prefill final-prompt query and t>0 consumes token_ids[t-1]"
                 ),
-                "metric_names": METRIC_NAMES,
-                "validity_names": VALID_NAMES,
+                "metric_names": stored_metrics,
+                "validity_names": stored_validity,
+                "compact": self.compact,
             }, indent=2))
         self.sample_id = None
         self.pending = None

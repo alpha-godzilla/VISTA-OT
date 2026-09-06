@@ -72,6 +72,14 @@ def parse_args():
         help="Optional raw Q/K/V dump selector: sample_id:layer:head:timestep.",
     )
     parser.add_argument(
+        "--retrieval-shift-compact", action="store_true",
+        help=(
+            "Store only the event-analysis metrics in float16 plus validity "
+            "masks. Numerical reconstruction checks are kept in sanity.jsonl; "
+            "this substantially reduces trace-disk usage."
+        ),
+    )
+    parser.add_argument(
         "--retrieval-shift-summary-file", type=str, default=None,
         help=(
             "Optional single flat NPZ summary written after tracing. It retains "
@@ -129,6 +137,7 @@ def main(args):
             model_loader.tokenizer,
             args.retrieval_shift_trace_dir,
             debug=args.retrieval_shift_debug,
+            compact=args.retrieval_shift_compact,
         )
         retrieval_shift_tracer.install()
         model_loader.llm_model.retrieval_shift_tracer = retrieval_shift_tracer
