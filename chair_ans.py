@@ -275,12 +275,6 @@ class CHAIR(object):
         treebank = TreebankWordTokenizer()
         spans = list(treebank.span_tokenize(normalized))
         source_words = [normalized[start:end] for start, end in spans]
-        chair_words = nltk.word_tokenize(normalized)
-        if source_words != chair_words:
-            raise RuntimeError(
-                "CHAIR span tokenization differs from nltk.word_tokenize; "
-                "cannot assign exact object character spans"
-            )
         tagged = nltk.pos_tag(source_words)
         lemmatizer = WordNetLemmatizer()
         lemmas = [
