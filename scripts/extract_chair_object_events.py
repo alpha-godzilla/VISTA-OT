@@ -130,17 +130,24 @@ def write_csv(path, fields, rows):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--trace-root", type=Path, required=True)
+    parser.add_argument("--trace-root", type=Path, default=None,
+                        help="Trace root; when present, token IDs are verified against trace NPZs.")
+    parser.add_argument("--generation-root", type=Path, default=None,
+                        help="Generation-record root for Phase-A light collection.")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model-path", default=os.environ.get("VISTA_LLAVA_MODEL_PATH", LLAVA_MODEL_PATH))
     parser.add_argument("--chair-cache", default=None)
     parser.add_argument("--coco-path", default=COCO_ANNOTATIONS_PATH)
     args = parser.parse_args()
 
+    if args.trace_root is None and args.generation_root is None:
+        raise ValueError("Provide --trace-root or --generation-root")
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=False)
     evaluator = load_evaluator(args.chair_cache, args.coco_path)
-    traces, generations = trace_paths(args.trace_root), generation_records(args.trace_root)
-    if set(traces) != set(generations):
+    record_root = args.generation_root or args.trace_root
+    traces = trace_paths(args.trace_root) if args.trace_root is not None else {}
+    generations = generation_records(record_root)
+    if traces and set(traces) != set(generations):
         missing_trace, missing_generation = sorted(set(generations) - set(traces)), sorted(set(traces) - set(generations))
         raise RuntimeError(f"Trace/generation sample mismatch; no trace={missing_trace[:5]}, no generation={missing_generation[:5]}")
 
@@ -150,11 +157,12 @@ def main():
         generated = generations[sample_id]
         caption = generated["generated_text"]
         token_ids = [int(token) for token in generated["generated_token_ids"]]
-        with np.load(traces[sample_id], allow_pickle=False) as trace:
-            trace_ids = trace["token_ids"].astype(np.int64).tolist()
-        if trace_ids != token_ids:
-            failures.append({"sample_id": sample_id, "reason": "trace_token_ids_mismatch"})
-            continue
+        if traces:
+            with np.load(traces[sample_id], allow_pickle=False) as trace:
+                trace_ids = trace["token_ids"].astype(np.int64).tolist()
+            if trace_ids != token_ids:
+                failures.append({"sample_id": sample_id, "reason": "trace_token_ids_mismatch"})
+                continue
         token_spans, reason = exact_token_char_spans(tokenizer, token_ids, caption)
         if reason is not None:
             failures.append({"sample_id": sample_id, "reason": reason})

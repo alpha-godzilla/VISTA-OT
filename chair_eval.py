@@ -59,6 +59,7 @@ def parse_args():
     # Miscellaneous arguments
     parser.add_argument("--seed", type=int, default=1994)
     parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--resume", action="store_true", help="Resume only samples already present in generation records.")
     parser.add_argument(
         "--retrieval-shift-trace-dir", type=str, default=None,
         help=(
@@ -86,6 +87,22 @@ def parse_args():
             "sample_id/timestep/layer/head rather than averaging them."
         ),
     )
+    parser.add_argument(
+        "--generation-record-dir", type=str, default=None,
+        help=(
+            "Optional light-weight generation records. This does not install "
+            "retrieval hooks and is intended for the Phase-A confirmatory "
+            "collection."
+        ),
+    )
+    parser.add_argument(
+        "--generation-decision-stats", action="store_true",
+        help=(
+            "Store only per-token logprob, entropy, top-1/top-2 logits and "
+            "their margin in --generation-record-dir. Generation itself is "
+            "unchanged; full score tensors are never written."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -102,6 +119,8 @@ def main(args):
         raise ValueError("--retrieval-shift-trace-dir currently requires --num-beams 1")
     if args.retrieval_shift_summary_file is not None and args.retrieval_shift_trace_dir is None:
         raise ValueError("--retrieval-shift-summary-file requires --retrieval-shift-trace-dir")
+    if args.generation_decision_stats and args.generation_record_dir is None:
+        raise ValueError("--generation-decision-stats requires --generation-record-dir")
     myutils.validate_ot_bary_sla_arguments(args)
     # seed everything
     myutils.seed_everything(args.seed)
@@ -114,9 +133,9 @@ def main(args):
 
     # prepare save file
     result_file = os.path.join(args.save_dir, args.file_name + ".jsonl")
-    if os.path.exists(result_file):
+    if os.path.exists(result_file) and not args.resume:
         exit(f"Result file {result_file} already exists. Exiting.")
-    f = open(result_file, "w", encoding="utf-8")
+    f = open(result_file, "a" if args.resume else "w", encoding="utf-8")
     stats_file = None
     if args.use_ot_bary_sla and (args.ot_log_stats or args.ot_attention_trace):
         stats_file = open(
@@ -129,6 +148,8 @@ def main(args):
     model_loader = ModelLoader(args.model)
     retrieval_shift_tracer = None
     trace_generation_file = None
+    generation_record_file = None
+    completed_generation_ids = set()
     if args.retrieval_shift_trace_dir is not None:
         from visual_memory_retrieval import RetrievalShiftTracer
 
@@ -144,6 +165,21 @@ def main(args):
         os.makedirs(args.retrieval_shift_trace_dir, exist_ok=True)
         trace_generation_file = open(
             os.path.join(args.retrieval_shift_trace_dir, "generation.jsonl"),
+            "a", encoding="utf-8",
+        )
+    if args.generation_record_dir is not None:
+        os.makedirs(args.generation_record_dir, exist_ok=True)
+        record_path = os.path.join(args.generation_record_dir, "generation.jsonl")
+        if args.resume and os.path.exists(record_path):
+            with open(record_path, encoding="utf-8") as existing:
+                for line in existing:
+                    try:
+                        completed_generation_ids.add(int(json.loads(line)["sample_id"]))
+                    except (json.JSONDecodeError, KeyError, ValueError):
+                        # A torn final append is intentionally not considered complete.
+                        continue
+        generation_record_file = open(
+            record_path,
             "a", encoding="utf-8",
         )
     # get dataloader
@@ -177,6 +213,8 @@ def main(args):
     for _, data in tqdm(enumerate(coco_loader), total=len(coco_loader)):
         with torch.inference_mode():
             img_id = data["img_id"]
+            if int(img_id[0]) in completed_generation_ids:
+                continue
             image = data["image"]
             batch_size = img_id.shape[0]
             query = ["Please help me describe the image in detail."] * batch_size
@@ -222,6 +260,7 @@ def main(args):
                     temperature=args.temperature,
                     repetition_penalty=args.repetition_penalty,
                     return_dict=True,
+                    output_scores=args.generation_decision_stats,
                     **kwargs
                     )
 
@@ -234,16 +273,14 @@ def main(args):
 
             output_text = model_loader.decode(outputs)
 
-        if retrieval_shift_tracer is not None:
-            sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
-            generated_ids = sequences[0, generation_input_length:].detach().cpu().tolist()
-            trace_path = retrieval_shift_tracer.finish_sample(
-                generated_token_ids=generated_ids,
-                generated_text=output_text[0],
-            )
-            print(f"Wrote retrieval-shift trace to {trace_path}")
-            trace_generation_file.write(json.dumps({
+        sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
+        generated_ids = sequences[0, generation_input_length:].detach().cpu().tolist()
+        generation_row = None
+        if retrieval_shift_tracer is not None or generation_record_file is not None:
+            generation_row = {
                 "sample_id": int(img_id[0]),
+                "image_id": int(img_id[0]),
+                "image_path": os.path.join(args.data_path, f"COCO_val2014_{int(img_id[0]):012d}.jpg"),
                 "prompt": query[0],
                 "generated_text": output_text[0],
                 "generated_token_ids": generated_ids,
@@ -251,9 +288,40 @@ def main(args):
                     model_loader.tokenizer.decode([token], clean_up_tokenization_spaces=False)
                     for token in generated_ids
                 ],
+                "generation_length": len(generated_ids),
                 "token_alignment": "generated token index j is predicted by q timestep j",
-            }) + "\n")
+            }
+            if args.generation_decision_stats:
+                decision_stats = []
+                scores = getattr(outputs, "scores", None)
+                if scores is None or len(scores) != len(generated_ids):
+                    raise RuntimeError("Generation score/token length mismatch")
+                for token_index, (token_id, score) in enumerate(zip(generated_ids, scores)):
+                    logits = score[0].float()
+                    log_norm = torch.logsumexp(logits, dim=-1)
+                    logprob = float((logits[int(token_id)] - log_norm).cpu())
+                    probabilities = torch.softmax(logits, dim=-1)
+                    entropy = float((-(probabilities * torch.log_softmax(logits, dim=-1)).sum()).cpu())
+                    top_values, top_ids = torch.topk(logits, k=2)
+                    decision_stats.append({
+                        "token_index": token_index, "token_id": int(token_id),
+                        "logprob": logprob, "entropy": entropy,
+                        "top1_id": int(top_ids[0]), "top1_logit": float(top_values[0]),
+                        "top2_id": int(top_ids[1]), "top2_logit": float(top_values[1]),
+                        "top1_top2_margin": float(top_values[0] - top_values[1]),
+                    })
+                generation_row["decision_stats"] = decision_stats
+        if retrieval_shift_tracer is not None:
+            trace_path = retrieval_shift_tracer.finish_sample(
+                generated_token_ids=generated_ids,
+                generated_text=output_text[0],
+            )
+            print(f"Wrote retrieval-shift trace to {trace_path}")
+            trace_generation_file.write(json.dumps(generation_row) + "\n")
             trace_generation_file.flush()
+        if generation_record_file is not None:
+            generation_record_file.write(json.dumps(generation_row) + "\n")
+            generation_record_file.flush()
 
         # write to file
         for i in range(len(output_text)):
@@ -277,6 +345,8 @@ def main(args):
         retrieval_shift_tracer.remove()
         del model_loader.llm_model.retrieval_shift_tracer
         trace_generation_file.close()
+    if generation_record_file is not None:
+        generation_record_file.close()
     if args.retrieval_shift_summary_file is not None:
         from visual_memory_retrieval import merge_trace_directory
 
