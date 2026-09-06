@@ -258,6 +258,12 @@ class LlavaMetaForCausalLM(ABC):
                 new_visual_position_masks,
             )
 
+        # The retrieval-shift tracer consumes the exact mask after multimodal
+        # expansion.  It is deliberately transient and is only materialized
+        # when an explicitly installed analysis tracer requests it.
+        if getattr(self, "retrieval_shift_tracer", None) is not None:
+            self._retrieval_shift_visual_position_masks = new_visual_position_masks.detach()
+
         return None, attention_mask, past_key_values, new_input_embeds, new_labels
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):

@@ -72,7 +72,22 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        raw_input_ids = input_ids
+        is_multimodal_prefill = bool(
+            images is not None
+            and input_ids is not None
+            and input_ids.shape[1] > 1
+            and past_key_values is None
+        )
         input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
+
+        retrieval_shift_tracer = getattr(self, "retrieval_shift_tracer", None)
+        if retrieval_shift_tracer is not None:
+            retrieval_shift_tracer.begin_forward(
+                raw_input_ids,
+                getattr(self, "_retrieval_shift_visual_position_masks", None),
+                is_prefill=is_multimodal_prefill,
+            )
 
         attention_ot = bool(
             getattr(self, "use_ot_bary_sla", False)

@@ -59,6 +59,18 @@ def parse_args():
     # Miscellaneous arguments
     parser.add_argument("--seed", type=int, default=1994)
     parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument(
+        "--retrieval-shift-trace-dir", type=str, default=None,
+        help=(
+            "Optional directory for non-invasive per-layer/head visual-prompt-"
+            "generated retrieval metrics. When omitted, no hooks are installed "
+            "and normal generation is unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--retrieval-shift-debug", type=str, default=None,
+        help="Optional raw Q/K/V dump selector: sample_id:layer:head:timestep.",
+    )
 
     return parser.parse_args()
 
@@ -96,6 +108,18 @@ def main(args):
 
     # get model loader
     model_loader = ModelLoader(args.model)
+    retrieval_shift_tracer = None
+    if args.retrieval_shift_trace_dir is not None:
+        from visual_memory_retrieval import RetrievalShiftTracer
+
+        retrieval_shift_tracer = RetrievalShiftTracer(
+            model_loader.llm_model,
+            model_loader.tokenizer,
+            args.retrieval_shift_trace_dir,
+            debug=args.retrieval_shift_debug,
+        )
+        retrieval_shift_tracer.install()
+        model_loader.llm_model.retrieval_shift_tracer = retrieval_shift_tracer
     # get dataloader
     fixed_image_ids = None
     if args.subset_ids_file is not None:
@@ -129,6 +153,8 @@ def main(args):
             img_id = data["img_id"]
             image = data["image"]
             batch_size = img_id.shape[0]
+            if retrieval_shift_tracer is not None:
+                retrieval_shift_tracer.start_sample(int(img_id[0]))
             query = ["Please help me describe the image in detail."] * batch_size
 
             with myutils.maybe_autocast(args.model, model_loader.vlm_model.device):
@@ -181,6 +207,10 @@ def main(args):
 
             output_text = model_loader.decode(outputs)
 
+        if retrieval_shift_tracer is not None:
+            trace_path = retrieval_shift_tracer.finish_sample()
+            print(f"Wrote retrieval-shift trace to {trace_path}")
+
         # write to file
         for i in range(len(output_text)):
             f.write(json.dumps({"image_id": int(img_id[i]), "caption": output_text[i]}) + "\n")
@@ -199,6 +229,9 @@ def main(args):
     f.close()
     if stats_file is not None:
         stats_file.close()
+    if retrieval_shift_tracer is not None:
+        retrieval_shift_tracer.remove()
+        del model_loader.llm_model.retrieval_shift_tracer
 
 
 if __name__ == "__main__":
