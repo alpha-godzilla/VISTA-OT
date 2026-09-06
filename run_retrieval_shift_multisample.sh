@@ -36,9 +36,14 @@ for i in "${!GPUS[@]}"; do
   [[ -s "$shard" ]] || { echo "Empty shard: $shard" >&2; exit 1; }
 done
 run_worker() {
-  local idx="$1" gpu="${GPUS[$1]}" shard="$OUT/manifests/shard_${idx}.txt"
+  # With `set -u`, do not reference `idx` in the same `local` declaration
+  # that initializes it: Bash expands all right-hand sides before assignment.
+  local idx="$1"
+  local gpu="${GPUS[$idx]}"
+  local shard="$OUT/manifests/shard_${idx}.txt"
   local shard_count; shard_count="$(wc -l < "$shard")"
-  local exp="${RUN_NAME}/shard_${idx}" trace="$TRACE_ROOT/shard_${idx}"
+  local exp="${RUN_NAME}/shard_${idx}"
+  local trace="$TRACE_ROOT/shard_${idx}"
   local -a trace_args=(--retrieval-shift-trace-dir "$trace")
   [[ "$COMPACT" == "1" ]] && trace_args+=(--retrieval-shift-compact)
   echo "[GPU $gpu] collecting $shard_count samples into shard_${idx}"
