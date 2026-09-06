@@ -27,7 +27,7 @@ echo "[1/4] Extracting strict CHAIR object/token events (CPU only)"
   --trace-root "$TRACE_ROOT" --output-dir "$OUT" --model-path "$MODEL_PATH" \
   --chair-cache "$CHAIR_CACHE" --coco-path "$COCO_PATH" \
   > "$OUT/logs/chair_event_extraction.log" 2>&1
-failure_count=$(( $(wc -l < "$OUT/chair_alignment_failures.csv") - 1 ))
+failure_count="$("$PYTHON_BIN" -c 'import csv, sys; print(sum(1 for _ in csv.DictReader(open(sys.argv[1], encoding="utf-8"))))' "$OUT/chair_alignment_failures.csv")"
 if (( failure_count > 0 )) && [[ "${ALLOW_ALIGNMENT_FAILURES:-0}" != "1" ]]; then
   echo "Strict alignment found $failure_count failures; stopping before analysis." >&2
   echo "Inspect $OUT/chair_alignment_failures.csv and $OUT/token_query_alignment_audit.csv" >&2

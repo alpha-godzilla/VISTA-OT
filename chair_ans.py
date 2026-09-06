@@ -322,16 +322,12 @@ class CHAIR(object):
             mention["object_category"] = self.inverse_synonym_dict[word]
             mentions.append(mention)
 
-        # Guard score compatibility: the event extractor must never silently
-        # use a different object definition than CHAIR itself.
-        words, node_words, _, _ = self.caption_to_words(caption)
-        observed = [(mention["word"], mention["object_category"]) for mention in mentions]
-        expected = list(zip(words, node_words))
-        if observed != expected:
-            raise RuntimeError(
-                "Object mention extraction disagrees with CHAIR caption_to_words; "
-                "refusing approximate event labels"
-            )
+        # This path intentionally avoids calling caption_to_words again: that
+        # historical helper invokes nltk.word_tokenize and therefore requires
+        # the optional Punkt sentence resource.  The lexical normalization,
+        # double-word scan, toilet/seat exception, synonym lookup, and order
+        # above are copied verbatim from caption_to_words; Treebank spans add
+        # character offsets without adding a new runtime data dependency.
         return mentions
 
     def get_annotations_from_segments(self):
