@@ -18,6 +18,7 @@ import json
 # from pattern.en import singularize
 from nltk.corpus import wordnet
 from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import TreebankWordTokenizer
 import argparse
 from vista_paths import COCO_ANNOTATIONS_PATH
 import tqdm
@@ -258,6 +259,80 @@ class CHAIR(object):
             node_words.append(self.inverse_synonym_dict[word])
         #return all the MSCOCO objects in the caption
         return words, node_words, idxs, double_words
+
+    def caption_to_object_mentions(self, caption):
+        """Return CHAIR object mentions with exact character spans.
+
+        This is deliberately separate from :meth:`caption_to_words`, which is
+        retained unchanged for historical CHAIR score compatibility.  The
+        lexical normalization and double-word rules are identical, but every
+        retained object is linked to the source character interval that
+        produced it.  A tokenization discrepancy is an error rather than an
+        approximation: downstream retrieval analyses may then report and
+        exclude the affected caption.
+        """
+        normalized = caption.lower()
+        treebank = TreebankWordTokenizer()
+        spans = list(treebank.span_tokenize(normalized))
+        source_words = [normalized[start:end] for start, end in spans]
+        chair_words = nltk.word_tokenize(normalized)
+        if source_words != chair_words:
+            raise RuntimeError(
+                "CHAIR span tokenization differs from nltk.word_tokenize; "
+                "cannot assign exact object character spans"
+            )
+        tagged = nltk.pos_tag(source_words)
+        lemmatizer = WordNetLemmatizer()
+        lemmas = [
+            lemmatizer.lemmatize(word, pos=self.get_wordnet_pos(tag) or wordnet.NOUN)
+            for word, tag in tagged
+        ]
+
+        units = []
+        index = 0
+        while index < len(lemmas):
+            phrase = " ".join(lemmas[index:index + 2])
+            if phrase in self.double_word_dict:
+                value, width = self.double_word_dict[phrase], 2
+            else:
+                value, width = lemmas[index], 1
+            units.append({
+                "word": value,
+                "char_start": spans[index][0],
+                "char_end": spans[index + width - 1][1],
+                "source_token_start": index,
+                "source_token_end": index + width,
+            })
+            index += width
+
+        # Keep this historical CHAIR special case exactly, but now remove the
+        # corresponding span-bearing unit as well.
+        unit_words = [unit["word"] for unit in units]
+        if "toilet" in unit_words and "seat" in unit_words:
+            units = [unit for unit in units if unit["word"] != "seat"]
+
+        mentions = []
+        mscoco_set = set(self.mscoco_objects)
+        for unit in units:
+            word = unit["word"]
+            if word not in mscoco_set:
+                continue
+            mention = dict(unit)
+            mention["object_text"] = caption[unit["char_start"]:unit["char_end"]]
+            mention["object_category"] = self.inverse_synonym_dict[word]
+            mentions.append(mention)
+
+        # Guard score compatibility: the event extractor must never silently
+        # use a different object definition than CHAIR itself.
+        words, node_words, _, _ = self.caption_to_words(caption)
+        observed = [(mention["word"], mention["object_category"]) for mention in mentions]
+        expected = list(zip(words, node_words))
+        if observed != expected:
+            raise RuntimeError(
+                "Object mention extraction disagrees with CHAIR caption_to_words; "
+                "refusing approximate event labels"
+            )
+        return mentions
 
     def get_annotations_from_segments(self):
         '''
