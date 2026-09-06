@@ -7,10 +7,15 @@ prefix and a true text-only prefix (the LLaVA IMAGE_TOKEN_INDEX is removed).
 """
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import torch
 from PIL import Image
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from anchor import IMAGE_TOKEN_INDEX, INSTRUCTION_TEMPLATE
 from llava.utils import disable_torch_init
