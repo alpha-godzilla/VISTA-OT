@@ -83,6 +83,8 @@ def get_file_name(args):
 def main(args):
     # bath size should be 1 as we are generating image specific steering vectors
     assert args.batch_size == 1, "Batch size should be 1"
+    if args.retrieval_shift_trace_dir is not None and args.num_beams != 1:
+        raise ValueError("--retrieval-shift-trace-dir currently requires --num-beams 1")
     myutils.validate_ot_bary_sla_arguments(args)
     # seed everything
     myutils.seed_everything(args.seed)
