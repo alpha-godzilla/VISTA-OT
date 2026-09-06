@@ -1,9 +1,13 @@
 import math
+import tempfile
 import unittest
+from pathlib import Path
+
+import numpy as np
 
 import torch
 
-from visual_memory_retrieval import retrieval_group_metrics
+from visual_memory_retrieval import METRIC_NAMES, VALID_NAMES, merge_trace_directory, retrieval_group_metrics
 
 
 class RetrievalGroupMetricsTest(unittest.TestCase):
@@ -34,6 +38,19 @@ class RetrievalGroupMetricsTest(unittest.TestCase):
         self.assertFalse(bool(result["has_G"][0]))
         self.assertEqual(float(result["L_GV"][0]), 0.0)
         self.assertTrue(torch.isfinite(result["reconstruction_error"]).all())
+
+    def test_merge_preserves_all_axes_as_flat_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            arrays = {name: np.ones((2, 1, 2), dtype=np.float32) for name in METRIC_NAMES}
+            arrays.update({name: np.ones((2, 1, 2), dtype=np.bool_) for name in VALID_NAMES})
+            arrays.update({name: np.ones((2, 1), dtype=np.int32) for name in ("n_V", "n_P", "n_G")})
+            np.savez_compressed(directory / "sample_7.npz", token_ids=np.array([-1, 3]), token_text=np.array(["x", "y"]), **arrays)
+            output = merge_trace_directory(directory, directory / "all.npz")
+            with np.load(output) as summary:
+                self.assertEqual(summary["sample_id"].shape, (4,))
+                self.assertEqual(summary["timestep"].tolist(), [0, 0, 1, 1])
+                self.assertEqual(summary["head"].tolist(), [0, 1, 0, 1])
 
 
 if __name__ == "__main__":

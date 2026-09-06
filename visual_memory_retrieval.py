@@ -26,6 +26,48 @@ METRIC_NAMES = (
 VALID_NAMES = ("has_V", "has_P", "has_G", "query_effect_valid", "new_K_effect_valid")
 
 
+def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
+    """Flatten all per-sample trace NPZ files into one lossless NPZ table.
+
+    Each output entry has shape ``[N]`` where ``N`` is the number of
+    ``sample_id × timestep × layer × head`` records.  Thus this is a single
+    convenient analysis file, not a pooled/averaged summary.
+    """
+    trace_dir, output = Path(trace_dir), Path(output)
+    files = sorted(trace_dir.glob("sample_*.npz"))
+    if not files:
+        raise FileNotFoundError(f"No sample_*.npz traces in {trace_dir}")
+    columns = {"sample_id": [], "timestep": [], "layer": [], "head": []}
+    for name in METRIC_NAMES + VALID_NAMES + ("n_V", "n_P", "n_G"):
+        columns[name] = []
+    for path in files:
+        with np.load(path, allow_pickle=False) as data:
+            sample_id = int(path.stem.removeprefix("sample_"))
+            # Metrics are [T,L,H]; group counts are [T,L].
+            shape = data["C_V"].shape
+            if len(shape) != 3:
+                raise ValueError(f"Unexpected trace shape in {path}: {shape}")
+            t, layer, head = np.indices(shape)
+            columns["sample_id"].append(np.full(t.size, sample_id, dtype=np.int64))
+            columns["timestep"].append(t.reshape(-1).astype(np.int32))
+            columns["layer"].append(layer.reshape(-1).astype(np.int16))
+            columns["head"].append(head.reshape(-1).astype(np.int16))
+            for name in METRIC_NAMES + VALID_NAMES:
+                columns[name].append(data[name].reshape(-1))
+            for name in ("n_V", "n_P", "n_G"):
+                columns[name].append(np.repeat(data[name][:, :, None], shape[2], axis=2).reshape(-1))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output, **{key: np.concatenate(value) for key, value in columns.items()})
+    output.with_suffix(".json").write_text(json.dumps({
+        "format": "flat sample_id,timestep,layer,head table",
+        "records": int(sum(chunk.size for chunk in columns["sample_id"])),
+        "metrics": METRIC_NAMES,
+        "validity": VALID_NAMES,
+        "source_dir": str(trace_dir),
+    }, indent=2))
+    return output
+
+
 def _safe_group_logmeanexp(logits: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """Return (log mean exp, nonempty) without NaNs for an empty group."""
     count = mask.sum()

@@ -71,6 +71,13 @@ def parse_args():
         "--retrieval-shift-debug", type=str, default=None,
         help="Optional raw Q/K/V dump selector: sample_id:layer:head:timestep.",
     )
+    parser.add_argument(
+        "--retrieval-shift-summary-file", type=str, default=None,
+        help=(
+            "Optional single flat NPZ summary written after tracing. It retains "
+            "sample_id/timestep/layer/head rather than averaging them."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -85,6 +92,8 @@ def main(args):
     assert args.batch_size == 1, "Batch size should be 1"
     if args.retrieval_shift_trace_dir is not None and args.num_beams != 1:
         raise ValueError("--retrieval-shift-trace-dir currently requires --num-beams 1")
+    if args.retrieval_shift_summary_file is not None and args.retrieval_shift_trace_dir is None:
+        raise ValueError("--retrieval-shift-summary-file requires --retrieval-shift-trace-dir")
     myutils.validate_ot_bary_sla_arguments(args)
     # seed everything
     myutils.seed_everything(args.seed)
@@ -234,6 +243,14 @@ def main(args):
     if retrieval_shift_tracer is not None:
         retrieval_shift_tracer.remove()
         del model_loader.llm_model.retrieval_shift_tracer
+    if args.retrieval_shift_summary_file is not None:
+        from visual_memory_retrieval import merge_trace_directory
+
+        summary_path = merge_trace_directory(
+            args.retrieval_shift_trace_dir,
+            args.retrieval_shift_summary_file,
+        )
+        print(f"Wrote retrieval-shift flat summary to {summary_path}")
 
 
 if __name__ == "__main__":
