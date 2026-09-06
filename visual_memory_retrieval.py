@@ -233,7 +233,13 @@ class RetrievalShiftTracer:
                     "RetrievalShiftTracer requires pretraining_tp=1 so its "
                     "instrumented Q/K/V projections exactly match attention"
                 )
-            hidden = args[0]
+            # Transformers releases differ here: some decoder layers call
+            # self_attn(hidden_states, ...), others use hidden_states=...
+            hidden = kwargs.get("hidden_states")
+            if hidden is None:
+                if not args:
+                    raise RuntimeError("Attention hook received no hidden_states")
+                hidden = args[0]
             if hidden.shape[0] != 1:
                 raise ValueError("RetrievalShiftTracer currently requires batch_size=1")
             position_ids = kwargs.get("position_ids")
