@@ -26,7 +26,14 @@ PY
   exit 0
 fi
 generate() {
-  local count="$1" offset="$2" tag="$3" candidate="$OUT/manifests/new_candidate_image_ids.txt" ids="$OUT/manifests/${tag}_ids.txt"
+  # Bash expands all right-hand sides in one `local` declaration before it
+  # assigns any left-hand side. Keep dependent values on separate lines under
+  # `set -u` (the same failure mode previously seen in grid launchers).
+  local count="$1"
+  local offset="$2"
+  local tag="$3"
+  local candidate="$OUT/manifests/new_candidate_image_ids.txt"
+  local ids="$OUT/manifests/${tag}_ids.txt"
   sed -n "$((offset+1)),$((offset+count))p" "$candidate" > "$ids"; [[ -s "$ids" ]] || { echo "No candidate IDs for $tag" >&2; return 1; }
   local i; for i in "${!GPUS[@]}"; do awk -v n="${#GPUS[@]}" -v x="$i" '((NR-1)%n)==x{print}' "$ids" > "$OUT/manifests/${tag}_shard_${i}.txt"; done
   declare -a PIDS=(); local start; start="$(date +%s)"
