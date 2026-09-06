@@ -12,10 +12,17 @@ import csv
 import json
 import os
 import pickle
+import sys
 from pathlib import Path
 
 import numpy as np
 from transformers import AutoTokenizer
+
+# Scripts are launched as ``python scripts/...`` by the runner, which makes
+# ``scripts/`` rather than the repository root the initial import path.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from chair_ans import CHAIR
 from vista_paths import COCO_ANNOTATIONS_PATH, LLAVA_MODEL_PATH
