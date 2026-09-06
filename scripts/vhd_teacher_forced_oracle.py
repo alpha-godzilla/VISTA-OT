@@ -73,7 +73,7 @@ def main():
             pixel_values = processed["pixel_values"]
             if isinstance(pixel_values, torch.Tensor):
                 processed["pixel_values"] = pixel_values.to("cuda")
-            _, kwargs = prepare_llava_inputs(
+            _, _, _, kwargs = prepare_llava_inputs(
                 template, ["Please help me describe the image in detail."], processed, tokenizer,
             )
             caption_ids = tokenizer(row["caption"], add_special_tokens=False, return_tensors="pt").input_ids.to("cuda")
