@@ -64,8 +64,15 @@ def main():
             if not path.exists():
                 raise FileNotFoundError(path)
             processed = loader.image_processor(Image.open(path).convert("RGB"))
-            if hasattr(processed, "to"):
-                processed = processed.to("cuda")
+            # This project intentionally calls the processor without
+            # ``return_tensors``.  On the installed Transformers version that
+            # yields a BatchFeature containing a Python list; BatchFeature.to
+            # cannot move such a mixed container.  ``prepare_llava_inputs``
+            # already converts list values to a CUDA tensor.  Move only an
+            # already-materialized tensor here, never the whole BatchFeature.
+            pixel_values = processed["pixel_values"]
+            if isinstance(pixel_values, torch.Tensor):
+                processed["pixel_values"] = pixel_values.to("cuda")
             _, kwargs = prepare_llava_inputs(
                 template, ["Please help me describe the image in detail."], processed, tokenizer,
             )
