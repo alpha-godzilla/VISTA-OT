@@ -37,7 +37,7 @@ def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
     files = sorted(trace_dir.glob("sample_*.npz"))
     if not files:
         raise FileNotFoundError(f"No sample_*.npz traces in {trace_dir}")
-    columns = {"sample_id": [], "timestep": [], "layer": [], "head": []}
+    columns = {"sample_id": [], "timestep": [], "layer": [], "head": [], "token_id": [], "token_text": []}
     for name in METRIC_NAMES + VALID_NAMES + ("n_V", "n_P", "n_G"):
         columns[name] = []
     for path in files:
@@ -52,6 +52,12 @@ def merge_trace_directory(trace_dir: Path, output: Path) -> Path:
             columns["timestep"].append(t.reshape(-1).astype(np.int32))
             columns["layer"].append(layer.reshape(-1).astype(np.int16))
             columns["head"].append(head.reshape(-1).astype(np.int16))
+            token_ids = np.repeat(data["token_ids"][:, None, None], shape[1], axis=1)
+            token_ids = np.repeat(token_ids, shape[2], axis=2)
+            token_text = np.repeat(data["token_text"][:, None, None], shape[1], axis=1)
+            token_text = np.repeat(token_text, shape[2], axis=2)
+            columns["token_id"].append(token_ids.reshape(-1))
+            columns["token_text"].append(token_text.reshape(-1))
             for name in METRIC_NAMES + VALID_NAMES:
                 columns[name].append(data[name].reshape(-1))
             for name in ("n_V", "n_P", "n_G"):

@@ -51,6 +51,7 @@ class RetrievalGroupMetricsTest(unittest.TestCase):
                 self.assertEqual(summary["sample_id"].shape, (4,))
                 self.assertEqual(summary["timestep"].tolist(), [0, 0, 1, 1])
                 self.assertEqual(summary["head"].tolist(), [0, 1, 0, 1])
+                self.assertEqual(summary["token_id"].tolist(), [-1, -1, 3, 3])
 
 
 if __name__ == "__main__":
