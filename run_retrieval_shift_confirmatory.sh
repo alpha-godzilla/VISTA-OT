@@ -35,7 +35,11 @@ generate() {
   for i in "${!GPUS[@]}"; do worker "$i" & PIDS+=("$!"); done; local failed=0 pid; for pid in "${PIDS[@]}"; do wait "$pid" || failed=1; done
   local end; end="$(date +%s)"; printf '{"tag":"%s","requested":%s,"seconds":%s}\n' "$tag" "$count" "$((end-start))" > "$OUT/${tag}_runtime.json"; ((failed==0)) || return 1
 }
-if [[ "$STAGE" == benchmark ]]; then generate "${BENCHMARK_IMAGES:-64}" 0 benchmark; echo "Run STAGE=chair_benchmark next; inspect throughput before Phase A."; exit 0; fi
+if [[ "$STAGE" == benchmark ]]; then
+  generate "${BENCHMARK_IMAGES:-64}" 0 benchmark
+  "$PYTHON_BIN" scripts/summarize_confirmatory_throughput.py --runtime "$OUT/benchmark_runtime.json" --generation-root "$HEAVY/generation_shards/benchmark" --gpus "${#GPUS[@]}" --phase-a-hours "${PHASE_A_BUDGET_HOURS:-5.0}" --output "$OUT/benchmark_throughput.json"
+  echo "Benchmark summary written. Set PHASE_A_IMAGES to suggested_phase_a_images only after reviewing it; then run STAGE=phase_a."; exit 0
+fi
 if [[ "$STAGE" == replay_validate ]]; then
   OLD_TRACE_ROOT="${OLD_TRACE_ROOT:-${RETRIEVAL_SHIFT_DATA_ROOT:-/data/sun_yuxi/retrieval_shift_data}/retrieval_shift_200_seed1994}"
   OLD_IDS="$OUT/manifests/replay_validation_ids.txt"
