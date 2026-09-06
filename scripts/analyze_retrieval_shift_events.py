@@ -69,25 +69,27 @@ def main():
             for metric, values in metrics.items():
                 mean, lo, hi = bootstrap_mean(values, rng, args.bootstrap)
                 writer.writerow(dict(event_type=event_type, metric=f"A_{metric}", event_count=len(values), mean=mean, ci_low=lo, ci_high=hi))
-    # Layer-wise and head-wise hallucinated-minus-grounded differences.
+    # Layer-wise and head-wise hallucinated-minus-grounded differences, kept
+    # separate for every requested metric.
     for axis in ("layer", "head"):
-        grouped = defaultdict(lambda: defaultdict(list))
-        for row in rows:
-            grouped[(row["event_type"], int(row["relative_t"]), int(row[axis]))]["net_pressure"].append(float(row["net_pressure"]))
-        rels = sorted({int(row["relative_t"]) for row in rows})
-        indices = sorted({int(row[axis]) for row in rows})
-        image = np.zeros((len(rels), len(indices)))
-        for i, rel in enumerate(rels):
-            for j, idx in enumerate(indices):
-                hall = grouped[("hallucinated", rel, idx)]["net_pressure"]
-                ground = grouped[("grounded", rel, idx)]["net_pressure"]
-                image[i, j] = np.mean(hall) - np.mean(ground) if hall and ground else 0.0
-        fig, ax = plt.subplots(figsize=(max(8, len(indices) * .3), 4))
-        im = ax.imshow(image, aspect="auto", cmap="coolwarm")
-        ax.set_title(f"Hallucinated − grounded net_pressure by {axis}")
-        ax.set_xlabel(axis); ax.set_ylabel("relative timestep")
-        ax.set_yticks(range(len(rels)), rels); fig.colorbar(im, ax=ax); fig.tight_layout()
-        fig.savefig(args.output_dir / f"net_pressure_{axis}_difference.png", dpi=180); plt.close(fig)
+        for metric in METRICS:
+            grouped = defaultdict(list)
+            for row in rows:
+                grouped[(row["event_type"], int(row["relative_t"]), int(row[axis]))].append(float(row[metric]))
+            rels = sorted({int(row["relative_t"]) for row in rows})
+            indices = sorted({int(row[axis]) for row in rows})
+            image = np.zeros((len(rels), len(indices)))
+            for i, rel in enumerate(rels):
+                for j, idx in enumerate(indices):
+                    hall = grouped[("hallucinated", rel, idx)]
+                    ground = grouped[("grounded", rel, idx)]
+                    image[i, j] = np.mean(hall) - np.mean(ground) if hall and ground else 0.0
+            fig, ax = plt.subplots(figsize=(max(8, len(indices) * .3), 4))
+            im = ax.imshow(image, aspect="auto", cmap="coolwarm")
+            ax.set_title(f"Hallucinated − grounded {metric} by {axis}")
+            ax.set_xlabel(axis); ax.set_ylabel("relative timestep")
+            ax.set_yticks(range(len(rels)), rels); fig.colorbar(im, ax=ax); fig.tight_layout()
+            fig.savefig(args.output_dir / f"{metric}_{axis}_difference.png", dpi=180); plt.close(fig)
     # Descriptive sign probabilities at head/layer/event-row level.
     with (args.output_dir / "sign_probabilities.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=("event_type", "statistic", "probability", "records")); writer.writeheader()
