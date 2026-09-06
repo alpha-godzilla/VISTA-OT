@@ -18,6 +18,7 @@ BOOTSTRAP="${BOOTSTRAP:-1000}"
 read -r -a WORKERS <<< "${WORKER_IDS:-0 1 2 3 4 5 6 7}"
 (( ${#WORKERS[@]} > 0 )) || { echo "WORKER_IDS must not be empty" >&2; exit 1; }
 [[ -d "$TRACE_ROOT" && -f "$MODEL_PATH/config.json" ]] || { echo "Set RETRIEVAL_SHIFT_DATA_ROOT and VISTA_LLAVA_MODEL_PATH to existing paths." >&2; exit 1; }
+export NLTK_DATA="${NLTK_DATA:-/data/sun_yuxi/nltk_data}"
 mkdir -p "$OUT/logs" "$OUT/chair_retrieval_analysis" "$EVENT_DATA_ROOT/windows"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/vista-retrieval-mpl}"
 mkdir -p "$MPLCONFIGDIR"
