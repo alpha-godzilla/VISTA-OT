@@ -99,7 +99,7 @@ def main():
                 num_beams=1, return_dict_in_generate=True, output_attentions=False,
                 **kwargs,
             )
-            text=loader.decode(generated)[0]; remove_vsv_layers(model)
+            text=loader.decode(generated.sequences)[0]; remove_vsv_layers(model)
             if sink:
                 captured=[sink[k]["x_mlp_last"].squeeze(0) for k in sorted(sink)]
                 for index,value in enumerate(captured):
