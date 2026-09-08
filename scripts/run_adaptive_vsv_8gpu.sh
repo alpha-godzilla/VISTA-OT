@@ -5,6 +5,11 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
 PYTHON_BIN="${PYTHON_BIN:-python}"; RUN="${RUN_NAME:-adaptive_vsv_laws}"; SEED="${SEED:-1994}"
 COCO="${VISTA_COCO_ROOT:-/data/sun_yuxi/datasets/coco}"; OUT="exp_results/$RUN"; MODEL_DATA="${ADAPTIVE_VSV_DATA_ROOT:-/data/sun_yuxi/adaptive_vsv_laws}/$RUN"
 read -r -a GPUS <<< "${GPU_IDS:-0 1 2 3 4 5 6 7}"; GRID="${LAMBDA_GRID:-0.00,0.05,0.08,0.10,0.11,0.12,0.13,0.14,0.15,0.16,0.17,0.18}"
+# LLaVA's local checkpoint still references the CLIP vision-tower repo ID.
+# Force the same offline cache behavior as the previously working runners;
+# callers may override HF_HOME if their cache lives elsewhere.
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+if [[ -z "${HF_HOME:-}" && -d /data/sun_yuxi/huggingface ]]; then export HF_HOME=/data/sun_yuxi/huggingface; fi
 mkdir -p "$OUT/manifests" "$OUT/logs" "$MODEL_DATA/shards"
 MASTER="$OUT/manifests/master_500_ids.txt"
 [[ -f "$MASTER" ]] || "$PYTHON_BIN" scripts/make_chair_seed_manifest.py --data-path "$COCO/val2014" --seed "$SEED" --subset-size 500 --output "$MASTER"
