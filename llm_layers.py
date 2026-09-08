@@ -6,11 +6,16 @@ from torch import Tensor
 
 class VSVLayer(nn.Module):
 
-    def __init__(self, vsv, lam, simple_mode=False):
+    def __init__(self, vsv, lam, simple_mode=False, sim_gate="legacy", diagnostic_sink=None, layer_idx=None):
         super(VSVLayer, self).__init__()
         self.vsv = vsv  # (1, 4096)
         self.lam = lam
         self.simple_mode = simple_mode
+        if sim_gate not in ("legacy", "off"):
+            raise ValueError("sim_gate must be legacy or off")
+        self.sim_gate = sim_gate
+        self.diagnostic_sink = diagnostic_sink
+        self.layer_idx = layer_idx
 
     def forward(self, x):
         if self.vsv is not None:
@@ -24,7 +29,17 @@ class VSVLayer(nn.Module):
                 x = F.normalize(F.normalize(x, p=2, dim=-1) + y, p=2, dim=-1) * original_norm
             else:
                 for i in range(len(self.vsv)):
-                    lambda_sim = 1.0 + torch.max(torch.tensor([0.]).to(x.device), F.cosine_similarity(x, -self.vsv[i][None,None,:], dim=-1)).unsqueeze(-1)
+                    if self.sim_gate == "legacy":
+                        lambda_sim = 1.0 + torch.clamp(
+                            F.cosine_similarity(x, -self.vsv[i][None,None,:], dim=-1), min=0.0
+                        ).unsqueeze(-1)
+                    else:
+                        lambda_sim = torch.ones((*x.shape[:-1], 1), device=x.device, dtype=x.dtype)
+                    if self.diagnostic_sink is not None and x.shape[1] > 1 and i == 0:
+                        self.diagnostic_sink[self.layer_idx] = {
+                            "x_mlp_last": x[:, -1].detach().float().cpu(),
+                            "lambda_sim": lambda_sim[:, -1].detach().float().cpu(),
+                        }
                     y += self.lam[i] * lambda_sim * F.normalize(self.vsv[i], dim=-1).repeat(1,x.shape[1],1)
                 y = y/len(self.vsv)
                 x = F.normalize(F.normalize(x.float(), p=2, dim=-1) + y, p=2, dim=-1) * original_norm
@@ -129,7 +144,8 @@ def get_mlp_layers(model: PreTrainedModel):
     mlp_layers = [find_module(layer, mlp_keywords) for layer in layers]
     return mlp_layers
 
-def add_vsv_layers(model: PreTrainedModel, vsv: Tensor, alpha: list, tar_layers=None):
+def add_vsv_layers(model: PreTrainedModel, vsv: Tensor, alpha: list, tar_layers=None,
+                   sim_gate="legacy", diagnostic_sink=None):
     layers = get_layers(model)
     mlp_keywords = ["mlp", "feedforward", "ffn"]
     assert len(vsv) == len(layers)
@@ -147,7 +163,11 @@ def add_vsv_layers(model: PreTrainedModel, vsv: Tensor, alpha: list, tar_layers=
             raise ValueError("Invalid target layers")
     for i, layer in enumerate(layers):
         original_mlp = find_module(layer, mlp_keywords)
-        layer.mlp = nn.Sequential(original_mlp, VSVLayer(vsv[i], alpha)) 
+        layer.mlp = nn.Sequential(
+            original_mlp,
+            VSVLayer(vsv[i], alpha, sim_gate=sim_gate,
+                     diagnostic_sink=diagnostic_sink, layer_idx=i),
+        )
 
 
 def remove_vsv_layers(model: PreTrainedModel):

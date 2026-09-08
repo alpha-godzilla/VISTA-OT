@@ -38,6 +38,10 @@ def parse_args():
     # Visual steering vector arguments
     parser.add_argument("--vsv", action="store_true", help='Use visual steering vector')
     parser.add_argument("--vsv-lambda", type=float, default=0.1)
+    parser.add_argument(
+        "--vsv-sim-gate", choices=("legacy", "off"), default="legacy",
+        help="VSV state gate; legacy preserves the official behavior.",
+    )
     parser.add_argument("--layers", default=None)
 
     # penultimate logits augmentation
@@ -233,7 +237,12 @@ def main(args):
                     visual_vector, _ = obtain_vsv(args, model_loader.llm_model, [[neg_kwargs, pos_kwargs]], rank=1)
 
                     # add steering vectors
-                    add_vsv_layers(model_loader.llm_model, torch.stack([visual_vector], dim=1).cuda(), [args.vsv_lambda], args.layers)
+                    add_vsv_layers(
+                        model_loader.llm_model,
+                        torch.stack([visual_vector], dim=1).cuda(),
+                        [args.vsv_lambda], args.layers,
+                        sim_gate=args.vsv_sim_gate,
+                    )
                     
                 # add logits augmentation flag
                 add_logits_flag(

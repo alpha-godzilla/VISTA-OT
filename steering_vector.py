@@ -130,6 +130,20 @@ def obtain_vsv(args, model, kwargs_list, rank=1):
     return direction, (neg_emb).view(hidden_states[demonstration_id][0].size(0), hidden_states[demonstration_id][0].size(1))
 
 
+def obtain_vsv_with_diagnostics(args, model, kwargs_list, rank=1):
+    """Return the official VSV plus raw layer diagnostics without changing it."""
+    hidden_states = get_hiddenstates(model, kwargs_list)
+    if len(hidden_states) != 1:
+        raise ValueError("Adaptive VSV diagnostics currently require one image pair")
+    neg, pos = hidden_states[0]
+    raw_diff = pos - neg
+    # Keep this construction byte-for-byte equivalent to obtain_vsv().
+    fit_data = raw_diff.reshape(1, -1)
+    pca = PCA(n_components=rank).to(fit_data.device).fit(fit_data.float())
+    direction = (pca.components_.sum(dim=0, keepdim=True) + pca.mean_).mean(0).view(raw_diff.shape)
+    return direction, neg, pos, raw_diff
+
+
 def add_logits_flag(model, args, tokenizer=None):
     assert not hasattr(model, 'logits_aug')
     assert not hasattr(model, 'logits_layers')
