@@ -94,7 +94,11 @@ def main():
             sink=diagnostic_sink if not cos_layers or all(not torch.isfinite(torch.tensor(x)) for x in cos_layers) else {}
             add_vsv_layers(model,torch.stack([vsv],dim=1).cuda(),[lam],a.layers,sim_gate=a.vsv_sim_gate,diagnostic_sink=sink)
             _, kwargs=loader.prepare_inputs_for_model(template,prompt,image)
-            generated=model.generate(do_sample=False,max_new_tokens=a.max_new_tokens,use_cache=True,num_beams=1,return_dict=True,output_attentions=False,**kwargs)
+            generated=model.generate(
+                do_sample=False, max_new_tokens=a.max_new_tokens, use_cache=True,
+                num_beams=1, return_dict_in_generate=True, output_attentions=False,
+                **kwargs,
+            )
             text=loader.decode(generated)[0]; remove_vsv_layers(model)
             if sink:
                 captured=[sink[k]["x_mlp_last"].squeeze(0) for k in sorted(sink)]
